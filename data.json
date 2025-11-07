@@ -1,0 +1,23 @@
+{
+  "candidates": [
+    {
+      "id": "cand-001",
+      "name": "Jane Example",
+      "status": "maybe",
+      "notes": [
+        {
+          "text": "lol",
+          "authorEmail": "jakub@hyreus.co.uk",
+          "authorName": "Jakub",
+          "timestamp": "2025-11-04T14:37:54.837Z"
+        },
+        {
+          "text": "lol",
+          "authorEmail": "jakub@hyreus.co.uk",
+          "authorName": "Jakub",
+          "timestamp": "2025-11-04T14:37:53.739Z"
+        }
+      ]
+    }
+  ]
+}

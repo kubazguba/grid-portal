@@ -1,0 +1,166 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Hyreus Talent Portal (Local)</title>
+    <style>
+      body { font-family: Arial, sans-serif; margin: 20px; }
+      .card { border: 1px solid #ddd; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+      .status button { margin-right: 6px; }
+      .active { font-weight: bold; }
+      .notes { margin-top: 10px; }
+      .note { background: #f7f7f7; padding: 8px; border-radius: 8px; margin-bottom: 6px; }
+      .row { display: flex; gap: 10px; }
+      input, textarea { width: 100%; padding: 8px; }
+      .hidden { display: none; }
+      .pill { padding: 4px 8px; border-radius: 999px; border: 1px solid #ccc; display: inline-block; }
+      .yes { background: #e6ffed; border-color: #34c759; }
+      .maybe { background: #fff7cc; border-color: #f2c200; }
+      .no { background: #ffe6e6; border-color: #ff3b30; }
+      .neutral { background: #f0f0f0; border-color: #bbb; }
+    </style>
+  </head>
+  <body>
+    <h1>Hyreus Talent Portal (Local)</h1>
+
+    <div id="loginCard" class="card">
+      <h3>Login</h3>
+      <div class="row">
+        <input id="email" placeholder="Email" />
+        <input id="password" type="password" placeholder="Password" />
+        <button onclick="login()">Login</button>
+      </div>
+      <small>Users: jakub@hyreus.co.uk (pass: jakub), john@hyreus.co.uk (pass: john)</small>
+    </div>
+
+    <div id="app" class="hidden">
+      <div class="row" style="align-items:center;">
+        <div id="me"></div>
+        <button onclick="logout()">Logout</button>
+      </div>
+      <div id="list"></div>
+    </div>
+
+    <script>
+      async function me() {
+        const r = await fetch('/api/me');
+        const j = await r.json();
+        return j.user;
+      }
+
+      async function login() {
+        const email = document.getElementById('email').value;
+        const password = document.getElementById('password').value;
+        const r = await fetch('/api/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password })
+        });
+        if (r.ok) {
+          init();
+        } else {
+          alert('Login failed');
+        }
+      }
+
+      async function logout() {
+        await fetch('/api/logout', { method: 'POST' });
+        document.getElementById('app').classList.add('hidden');
+        document.getElementById('loginCard').classList.remove('hidden');
+      }
+
+      async function fetchCandidates() {
+        const r = await fetch('/api/candidates');
+        if (!r.ok) {
+          document.getElementById('list').innerHTML = '<p>Login required.</p>';
+          return [];
+        }
+        return r.json();
+      }
+
+      function statusPill(status) {
+        return '<span class="pill ' + status + '">' + status.toUpperCase() + '</span>';
+      }
+
+      async function setStatus(id, status) {
+        const r = await fetch('/api/candidates/' + id + '/status', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status })
+        });
+        if (!r.ok) {
+          alert('Failed to update status');
+        } else {
+          render();
+        }
+      }
+
+      async function addNote(id) {
+        const noteText = document.getElementById('note-' + id).value.trim();
+        if (!noteText) return;
+        const r = await fetch('/api/candidates/' + id + '/notes', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: noteText })
+        });
+        if (!r.ok) {
+          alert('Failed to add note');
+        } else {
+          document.getElementById('note-' + id).value = '';
+          render();
+        }
+      }
+
+      async function render() {
+        const list = document.getElementById('list');
+        const items = await fetchCandidates();
+        list.innerHTML = items.map(c => {
+          return `
+            <div class="card">
+              <div style="display:flex; justify-content:space-between; align-items:center;">
+                <h3>${c.name}</h3>
+                <div>${statusPill(c.status)}</div>
+              </div>
+              <div class="status">
+                <button onclick="setStatus('${c.id}', 'yes')">Yes</button>
+                <button onclick="setStatus('${c.id}', 'maybe')">Maybe</button>
+                <button onclick="setStatus('${c.id}', 'no')">No</button>
+                <button onclick="setStatus('${c.id}', 'neutral')">Neutral</button>
+              </div>
+              <div class="notes">
+                <h4>Notes</h4>
+                <div>
+                  <textarea id="note-${c.id}" placeholder="Add a note..."></textarea>
+                  <button onclick="addNote('${c.id}')">Add Note</button>
+                </div>
+                <div style="margin-top:8px;">
+                  ${(c.notes || []).map(n => `
+                    <div class="note">
+                      <div><strong>${n.authorName || ''}</strong> &lt;${n.authorEmail}&gt; — ${new Date(n.timestamp).toLocaleString()}</div>
+                      <div>${n.text}</div>
+                    </div>`).join('')}
+                </div>
+              </div>
+            </div>
+          `;
+        }).join('');
+      }
+
+      async function init() {
+        const user = await me();
+        if (user) {
+          document.getElementById('me').innerText = 'Logged in as: ' + (user.name ? user.name + ' ' : '') + '<' + user.email + '>';
+          document.getElementById('loginCard').classList.add('hidden');
+          document.getElementById('app').classList.remove('hidden');
+          render();
+        } else {
+          document.getElementById('app').classList.add('hidden');
+          document.getElementById('loginCard').classList.remove('hidden');
+        }
+      }
+
+      init();
+    </script>
+  </body>
+</html>
