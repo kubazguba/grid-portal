@@ -1,6 +1,12 @@
 /**
- * GRID — Full Collaboration Edition (Self-Managing, Fixed)
- * (See prior message for feature list)
+ * GRID — Self-Healing & Position Management Edition
+ * -------------------------------------------------
+ * New in this build:
+ * - Upload CVs as a collapsible dropdown (admins only) with arrow animation.
+ * - Delete Position button (top-right of title). Admins: any; Clients: empty-only (greyed out otherwise).
+ * - Self-healing folders on access (repairs files/, feedback.json, details.json).
+ * - Sidebar width 240px; + button and textarea alignment fixes.
+ * - Email notifications now also on position deletion (to admins).
  */
 
 const fs = require('fs');
@@ -13,10 +19,12 @@ const app = express();
 app.use(express.json({ limit: '25mb' }));
 app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 
+// ---------------- Config ----------------
 const PORT = process.env.PORT || 3000;
 const DATA_DIR = path.join(__dirname, 'data');
 const LOGO_DIR = path.join(__dirname, 'logos');
 
+// Users
 const users = [
   { email: 'jakub@hyreus.co.uk', password: 'jakub', name: 'Jakub', role: 'admin' },
   { email: 'john@hyreus.co.uk',  password: 'john',  name: 'John',  role: 'admin' },
@@ -25,9 +33,10 @@ const users = [
 
 const BRAND = { bg: '#4d4445', accent: '#696162', text: '#ffffff', lightCard: '#5a5253' };
 
+// Email (admins only). Prefer env vars if present.
 const NOTIFY_FROM = process.env.NOTIFY_FROM || 'info@hyreus.co.uk';
 const NOTIFY_TO = (process.env.NOTIFY_TO || 'jakub@hyreus.co.uk,john@hyreus.co.uk').split(',');
-const SMTP_PASSWORD = process.env.SMTP_PASSWORD || 'wskrzesic12';
+const SMTP_PASSWORD = process.env.SMTP_PASSWORD || 'wskrzesic12'; // Use real Microsoft 365 App Password in prod
 
 const transporter = nodemailer.createTransport({
   host: 'smtp.office365.com',
@@ -36,25 +45,36 @@ const transporter = nodemailer.createTransport({
   auth: { user: NOTIFY_FROM, pass: SMTP_PASSWORD }
 });
 
+// -------------- Helpers & bootstrap --------------
 function safeMkdir(p){ if(!fs.existsSync(p)) fs.mkdirSync(p, { recursive: true }); }
-function ensureClientPosition(client, position){
-  const pdir = path.join(DATA_DIR, client, position);
-  safeMkdir(path.join(pdir, 'files'));
-  const fb = path.join(pdir, 'feedback.json');
-  if (!fs.existsSync(fb)) fs.writeFileSync(fb, JSON.stringify({}, null, 2));
-  const det = path.join(pdir, 'details.json');
-  if (!fs.existsSync(det)) fs.writeFileSync(det, JSON.stringify(defaultDetails(), null, 2));
-}
+function defaultDetails(){ return { salary: "", location: "", experience: "", benefits: "", notes: "" }; }
 function feedbackPath(client, position){ return path.join(DATA_DIR, client, position, 'feedback.json'); }
 function detailsPath(client, position){ return path.join(DATA_DIR, client, position, 'details.json'); }
 function filesDirPath(client, position){ return path.join(DATA_DIR, client, position, 'files'); }
+function positionDir(client, position){ return path.join(DATA_DIR, client, position); }
 function readJSON(fp, fallback){ if (!fs.existsSync(fp)) return (fallback ?? {}); try { return JSON.parse(fs.readFileSync(fp, 'utf8')); } catch { return (fallback ?? {}); } }
 function writeJSON(fp, data){ fs.writeFileSync(fp, JSON.stringify(data, null, 2)); }
 function listDirs(dir){ if (!fs.existsSync(dir)) return []; return fs.readdirSync(dir, { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name); }
 function listFiles(dir){ if (!fs.existsSync(dir)) return []; return fs.readdirSync(dir).filter(f => !f.startsWith('.')); }
-function defaultDetails(){ return { salary: "", location: "", experience: "", benefits: "", notes: "" }; }
 
-app.use(session({ secret: 'hyreus-local-secret', resave: false, saveUninitialized: false, cookie: { maxAge: 1000*60*60*8 } }));
+// Self-heal: ensure structure exists for client/position
+function ensureClientPosition(client, position){
+  const pdir = positionDir(client, position);
+  safeMkdir(pdir);
+  safeMkdir(filesDirPath(client, position));
+  const fb = feedbackPath(client, position);
+  if (!fs.existsSync(fb)) fs.writeFileSync(fb, JSON.stringify({}, null, 2));
+  const det = detailsPath(client, position);
+  if (!fs.existsSync(det)) fs.writeFileSync(det, JSON.stringify(defaultDetails(), null, 2));
+}
+
+// -------------- Auth --------------
+app.use(session({
+  secret: 'hyreus-local-secret',
+  resave: false,
+  saveUninitialized: false,
+  cookie: { maxAge: 1000 * 60 * 60 * 8 }
+}));
 function requireAuth(req, res, next){ if (req.session && req.session.user) return next(); res.status(401).json({ error: 'unauthorized' }); }
 
 app.post('/api/login', (req, res) => {
@@ -67,6 +87,7 @@ app.post('/api/login', (req, res) => {
 app.post('/api/logout', (req, res) => req.session.destroy(() => res.json({ ok: true })));
 app.get('/api/me', (req, res) => res.json({ user: req.session.user || null }));
 
+// -------------- Email helpers --------------
 async function sendEmail(type, payload){
   const when = new Date().toLocaleString();
   let subject = '', html = '';
@@ -92,26 +113,46 @@ async function sendEmail(type, payload){
               <li>Notes: ${details.notes || '-'}</li>
             </ul>
             <p>${when}</p>`;
+  } else if (type === 'delete_position') {
+    const { client, position, actor } = payload;
+    subject = `Position deleted – ${client} / ${position}`;
+    html = `<p><b>Client:</b> ${client}</p><p><b>Position:</b> ${position}</p>
+            <p><b>Deleted by:</b> ${actor.name} &lt;${actor.email}&gt;</p>
+            <p>${when}</p>`;
   }
-  try { await transporter.sendMail({ from: NOTIFY_FROM, to: NOTIFY_TO, subject, html }); } catch(e){ console.error('Email error:', e.message); }
+  try { await transporter.sendMail({ from: NOTIFY_FROM, to: NOTIFY_TO, subject, html }); }
+  catch (e) { console.error('Email error:', e.message); }
 }
 
+// -------------- APIs --------------
+
+// Clients visible to current user
 app.get('/api/clients', requireAuth, (req, res) => {
   const u = req.session.user;
-  if (u.role === 'admin') return res.json({ clients: listDirs(DATA_DIR) });
-  return res.json({ clients: [u.clientId] });
+  // Clients list = directories under data/
+  safeMkdir(DATA_DIR);
+  const all = listDirs(DATA_DIR);
+  if (u.role === 'admin') return res.json({ clients: all });
+  return res.json({ clients: all.filter(c => c === u.clientId) });
 });
 
+// Positions with counts (self-heal directories)
 app.get('/api/positions', requireAuth, (req, res) => {
   const client = req.query.client || '';
   const u = req.session.user;
   if (!client) return res.status(400).json({ error: 'client required' });
   if (u.role !== 'admin' && u.clientId !== client) return res.status(403).json({ error: 'forbidden' });
-  const posDirs = listDirs(path.join(DATA_DIR, client));
+
+  const posRoot = path.join(DATA_DIR, client);
+  safeMkdir(posRoot);
+  const posDirs = listDirs(posRoot);
+  // Self-heal each discovered position directory
+  posDirs.forEach(p => ensureClientPosition(client, p));
   const positions = posDirs.map(p => ({ name: p, count: listFiles(filesDirPath(client, p)).length }));
   res.json({ positions });
 });
 
+// Add position (admins + client owner)
 app.post('/api/position', requireAuth, async (req, res) => {
   const { client, position, details } = req.body || {};
   const u = req.session.user;
@@ -126,12 +167,38 @@ app.post('/api/position', requireAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
+// Delete position (admins any; clients only if empty)
+app.post('/api/position-delete', requireAuth, (req, res) => {
+  const { client, position } = req.body || {};
+  const u = req.session.user;
+  if (!client || !position) return res.status(400).json({ error: 'bad request' });
+  if (u.role !== 'admin' && u.clientId !== client) return res.status(403).json({ error: 'forbidden' });
+
+  // If client role, only allow delete when no CVs
+  if (u.role !== 'admin') {
+    const files = listFiles(filesDirPath(client, position));
+    if (files.length > 0) return res.status(403).json({ error: 'forbidden' });
+  }
+
+  const pdir = positionDir(client, position);
+  try {
+    if (fs.existsSync(pdir)) fs.rmSync(pdir, { recursive: true, force: true });
+    sendEmail('delete_position', { client, position, actor: u }).catch(()=>{});
+    return res.json({ ok: true });
+  } catch (e) {
+    return res.status(500).json({ error: 'delete_failed', message: e.message });
+  }
+});
+
+// List files + statuses (self-heal)
 app.get('/api/list', requireAuth, (req, res) => {
   const client = req.query.client || '';
   const pos = req.query.pos || '';
   const u = req.session.user;
   if (!client || !pos) return res.status(400).json({ error: 'missing' });
   if (u.role !== 'admin' && u.clientId !== client) return res.status(403).json({ error: 'forbidden' });
+
+  ensureClientPosition(client, pos);
   const fbPath = feedbackPath(client, pos);
   const filesDir = filesDirPath(client, pos);
   const files = listFiles(filesDir);
@@ -141,12 +208,14 @@ app.get('/api/list', requireAuth, (req, res) => {
   res.json({ files, status: fb });
 });
 
+// Position details (self-heal)
 app.get('/api/details', requireAuth, (req, res) => {
   const client = req.query.client || '';
   const pos = req.query.pos || '';
   const u = req.session.user;
   if (!client || !pos) return res.status(400).json({ error: 'missing' });
   if (u.role !== 'admin' && u.clientId !== client) return res.status(403).json({ error: 'forbidden' });
+  ensureClientPosition(client, pos);
   const det = readJSON(detailsPath(client, pos), defaultDetails());
   res.json({ details: det });
 });
@@ -155,12 +224,14 @@ app.post('/api/details', requireAuth, (req, res) => {
   const u = req.session.user;
   if (!client || !position || !details) return res.status(400).json({ error: 'bad request' });
   if (u.role !== 'admin' && u.clientId !== client) return res.status(403).json({ error: 'forbidden' });
+  ensureClientPosition(client, position);
   const detPath = detailsPath(client, position);
   const merged = Object.assign(defaultDetails(), details);
   writeJSON(detPath, merged);
   res.json({ ok: true, details: merged });
 });
 
+// Stream file
 app.get('/api/file', requireAuth, (req, res) => {
   const client = req.query.client || '';
   const pos = req.query.pos || '';
@@ -168,17 +239,21 @@ app.get('/api/file', requireAuth, (req, res) => {
   const u = req.session.user;
   if (!client || !pos || !name) return res.status(400).send('missing');
   if (u.role !== 'admin' && u.clientId !== client) return res.status(403).send('forbidden');
+  ensureClientPosition(client, pos);
   const fpath = path.join(filesDirPath(client, pos), name);
   if (!fs.existsSync(fpath)) return res.status(404).send('not found');
   res.setHeader('Content-Disposition', 'inline; filename=' + name);
   fs.createReadStream(fpath).pipe(res);
 });
 
+// Update status (optimistic; self-heal)
 app.post('/api/status', requireAuth, async (req, res) => {
   const { client, position, file, status } = req.body || {};
   const u = req.session.user;
   if (!client || !position || !file || !['yes','maybe','no','neutral'].includes(status)) return res.status(400).json({ error: 'bad request' });
   if (u.role !== 'admin' && u.clientId !== client) return res.status(403).json({ error: 'forbidden' });
+
+  ensureClientPosition(client, position);
   const fbPath = feedbackPath(client, position);
   const fb = readJSON(fbPath, {});
   if (!fb[file]) fb[file] = { decision: 'neutral', notes: [] };
@@ -188,11 +263,14 @@ app.post('/api/status', requireAuth, async (req, res) => {
   res.json({ ok: true, decision: fb[file].decision });
 });
 
+// Add note (self-heal)
 app.post('/api/note', requireAuth, async (req, res) => {
   const { client, position, file, text } = req.body || {};
   const u = req.session.user;
   if (!client || !position || !file || !text) return res.status(400).json({ error: 'bad request' });
   if (u.role !== 'admin' && u.clientId !== client) return res.status(403).json({ error: 'forbidden' });
+
+  ensureClientPosition(client, position);
   const fbPath = feedbackPath(client, position);
   const fb = readJSON(fbPath, {});
   if (!fb[file]) fb[file] = { decision: 'neutral', notes: [] };
@@ -203,11 +281,13 @@ app.post('/api/note', requireAuth, async (req, res) => {
   res.json({ ok: true, note });
 });
 
+// Delete note
 app.post('/api/note-delete', requireAuth, (req, res) => {
   const { client, position, file, timestamp } = req.body || {};
   const u = req.session.user;
   if (!client || !position || !file || !timestamp) return res.status(400).json({ error: 'bad request' });
   if (u.role !== 'admin' && u.clientId !== client) return res.status(403).json({ error: 'forbidden' });
+  ensureClientPosition(client, position);
   const fbPath = feedbackPath(client, position);
   const fb = readJSON(fbPath, {});
   if (!fb[file] || !Array.isArray(fb[file].notes)) return res.json({ ok: true });
@@ -222,11 +302,13 @@ app.post('/api/note-delete', requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
+// Upload CVs (admins only) — Base64 JSON (self-heal)
 app.post('/api/upload', requireAuth, async (req, res) => {
   const { client, position, files } = req.body || {};
   const u = req.session.user;
   if (u.role !== 'admin') return res.status(403).json({ error: 'admins only' });
   if (!client || !position || !Array.isArray(files)) return res.status(400).json({ error: 'bad request' });
+  ensureClientPosition(client, position);
   const dir = filesDirPath(client, position);
   let saved = [];
   for (const f of files) {
@@ -236,21 +318,14 @@ app.post('/api/upload', requireAuth, async (req, res) => {
       const buf = Buffer.from(b64, 'base64');
       fs.writeFileSync(path.join(dir, name), buf);
       saved.push(name);
-    } catch(e){ console.error('Upload error for one file:', e.message); }
+    } catch(e){
+      console.error('Upload error for one file:', e.message);
+    }
   }
   res.json({ ok: true, saved });
 });
 
-app.post('/api/cv-delete', requireAuth, (req, res) => {
-  const { client, position, name } = req.body || {};
-  const u = req.session.user;
-  if (u.role !== 'admin') return res.status(403).json({ error: 'admins only' });
-  if (!client || !position || !name) return res.status(400).json({ error: 'bad request' });
-  const fpath = path.join(filesDirPath(client, position), name);
-  if (fs.existsSync(fpath)) fs.unlinkSync(fpath);
-  res.json({ ok: true });
-});
-
+// -------------- Logos --------------
 app.get('/logo', (req, res) => {
   const png = path.join(__dirname, 'logo.png');
   const jpg = path.join(__dirname, 'logo.jpg');
@@ -267,6 +342,7 @@ app.get('/logos/:client', (req, res) => {
   res.status(404).end();
 });
 
+// -------------- UI --------------
 app.get('/', (req, res) => {
   const local = (req.headers.host || '').includes('localhost') || (req.headers.host || '').includes('127.0.0.1');
 
@@ -276,18 +352,19 @@ app.get('/', (req, res) => {
     input,select,textarea{background:#40393a;color:#fff;border:1px solid ${BRAND.accent};border-radius:8px;padding:8px;}
     button{border:1px solid ${BRAND.accent};background:#40393a;color:#fff;border-radius:8px;padding:8px 12px;cursor:pointer;}
     button:hover{filter:brightness(1.06)}
-    .layout{display:grid;grid-template-columns:260px 1fr;gap:16px;}
+    .layout{display:grid;grid-template-columns:240px 1fr;gap:16px;} /* sidebar 240px */
     .sidebar{background:#40393a;border:1px solid ${BRAND.accent};border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:12px;position:sticky;top:20px;height:calc(100vh - 40px);}
     .logo{display:flex;flex-direction:column;align-items:center;gap:8px;}
     .pos{padding:6px;border:1px solid ${BRAND.accent};border-radius:8px;margin-bottom:6px;cursor:pointer;}
     .pos.active{background:#5a5253;}
     .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;}
-    .card{position:relative;border:1px solid ${BRAND.accent};border-radius:10px;background:#463f40;padding:12px;display:flex;flex-direction:column;gap:8px;}
+    .card{position:relative;border:1px solid ${BRAND.accent};border-radius:10px;background:#463f40;padding:12px;display:flex;flex-direction:column;gap:6px;} /* tighter spacing */
     .file{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-    .note{width:100%}
+    .note{width:100%;box-sizing:border-box;border-radius:6px;} /* no overflow */
     .details{background:${BRAND.lightCard};border:1px solid ${BRAND.accent};border-radius:10px;padding:12px;margin-bottom:12px;}
     .details h3{margin:0 0 8px 0;text-align:left;}
-    .titleCentered{font-size:20px;font-weight:700;text-align:center;margin:0 0 12px 0;}
+    .titleRow{display:flex;align-items:center;justify-content:space-between;margin:0 0 12px 0;}
+    .titleCentered{font-size:20px;font-weight:700;}
     .muted{opacity:.7}
     .field{display:flex;gap:8px;align-items:center;margin-bottom:6px;}
     .label{width:110px;opacity:.9}
@@ -296,9 +373,15 @@ app.get('/', (req, res) => {
     .trash:hover{color:#fff}
     .footer{margin-top:auto;text-align:center;opacity:.7;font-size:12px;}
     .sep{height:1px;background:${BRAND.accent};margin:8px 0;}
-    .plus{display:flex;justify-content:center;align-items:center;width:100%;border:1px dashed ${BRAND.accent};border-radius:8px;padding:8px;cursor:pointer;opacity:.9;}
+    .plus{display:flex;justify-content:center;align-items:center;width:100%;box-sizing:border-box;border:1px dashed ${BRAND.accent};border-radius:8px;padding:6px 0;cursor:pointer;opacity:.9;margin-top:4px;}
     .plus:hover{filter:brightness(1.1)}
     .pill{display:inline-block;border:1px solid ${BRAND.accent};border-radius:999px;padding:2px 8px;font-size:12px;opacity:.85}
+    .iconBtn{background:transparent;border:1px solid ${BRAND.accent};border-radius:8px;padding:6px 10px;cursor:pointer;display:inline-flex;gap:6px;align-items:center;}
+    .iconBtn[disabled]{opacity:.4;cursor:not-allowed}
+    .uploadBox{border:1px dashed ${BRAND.accent};border-radius:8px;padding:8px;margin-top:8px;display:none;}
+    .uploadToggle{display:inline-flex;align-items:center;gap:8px;cursor:pointer;}
+    .arrow{display:inline-block;transition:transform .18s ease;}
+    .arrow.open{transform:rotate(180deg);}
   `;
 
   const html = `<!doctype html><html><head><meta charset="utf-8"/>
@@ -393,7 +476,7 @@ app.get('/', (req, res) => {
       const r = await api('/api/positions?client='+encodeURIComponent(c));
       const box=document.getElementById('positions'); box.innerHTML='';
       (r.positions||[]).forEach(p=>{
-        const d=document.createElement('div'); d.className='pos'; d.innerHTML = p.name + ' ('+p.count+')';
+        const d=document.createElement('div'); d.className='pos'; d.textContent = p.name + ' ('+p.count+')';
         d.onclick=function(){ selectPosition(p.name, d); };
         box.appendChild(d);
       });
@@ -417,13 +500,25 @@ app.get('/', (req, res) => {
       return '#0000';
     }
 
+    function canClientDeletePosition(isEmpty){
+      if(ME.role==='admin') return true;
+      return !!isEmpty; // client can delete only if empty
+    }
+
     async function loadPosition(pos){
       const detailsResp = await api('/api/details?client='+encodeURIComponent(CURRENT_CLIENT)+'&pos='+encodeURIComponent(pos));
       const listResp = await api('/api/list?client='+encodeURIComponent(CURRENT_CLIENT)+'&pos='+encodeURIComponent(pos));
       const main = document.getElementById('main');
+      const isEmpty = !(listResp.files && listResp.files.length);
 
-      let h = '<div class="titleCentered">'+CURRENT_CLIENT+' — '+pos+'</div>';
+      // header row with delete icon on far right
+      let h = '<div class="titleRow">';
+      h += '<div class="titleCentered">'+CURRENT_CLIENT+' — '+pos+'</div>';
+      const disableDel = (!canClientDeletePosition(isEmpty));
+      h += '<button class="iconBtn" '+(disableDel?'disabled':'')+' onclick="'+(disableDel?'':'deletePosition()')+'" title="Delete position">🗑️</button>';
+      h += '</div>';
 
+      // details
       const d = (detailsResp.details || {});
       function fmt(v){ return v && String(v).trim() ? String(v) : '<span class="muted">Not provided</span>'; }
       h += '<div class="details" id="detBox">';
@@ -436,6 +531,7 @@ app.get('/', (req, res) => {
       h += '<div style="margin-top:8px;"><span class="pill" onclick="editDetails()">Edit Details</span></div>';
       h += '</div>';
 
+      // files grid
       h += '<div class="grid">';
       (listResp.files||[]).forEach(f=>{
         const sid = safeId(f);
@@ -465,13 +561,17 @@ app.get('/', (req, res) => {
       });
       h += '</div>';
 
+      // Upload dropdown (admins only)
       if(ME.role==='admin'){
-        h += '<div style="margin-top:12px;padding:8px;border:1px dashed ${BRAND.accent};border-radius:8px;">';
-        h += '<div style="margin-bottom:6px;font-weight:600;">Upload CVs</div>';
-        h += '<input id="cvFiles" type="file" multiple /> ';
-        h += '<button onclick="uploadCVs()">Upload</button> ';
-        h += '<span id="upMsg" class="muted"></span>';
+        h += '<div style="margin-top:12px;">';
+        h += '<div class="uploadToggle" onclick="toggleUpload()">';
+        h += '<span id="uArrow" class="arrow">⬇</span><span>Upload CVs</span>';
         h += '</div>';
+        h += '<div id="uBox" class="uploadBox">';
+        h += '  <input id="cvFiles" type="file" multiple /> ';
+        h += '  <button onclick="uploadCVs()">Upload</button> ';
+        h += '  <span id="upMsg" class="muted"></span>';
+        h += '</div></div>';
       }
 
       main.innerHTML = h;
@@ -508,6 +608,7 @@ app.get('/', (req, res) => {
       if (r.ok) { loadPosition(CURRENT_POS); } else { alert('Failed to save'); }
     }
 
+    // Optimistic status
     async function setStatusUI(file, s){
       const oid = 'ov_'+safeId(file);
       const el = document.getElementById(oid);
@@ -561,6 +662,16 @@ app.get('/', (req, res) => {
       } else { alert('Failed to delete'); }
     }
 
+    // Upload CVs (admins only). Collapsible box
+    function toggleUpload(){
+      const box = document.getElementById('uBox');
+      const arr = document.getElementById('uArrow');
+      if(!box || !arr) return;
+      const isOpen = box.style.display === 'block';
+      box.style.display = isOpen ? 'none' : 'block';
+      if(isOpen){ arr.classList.remove('open'); } else { arr.classList.add('open'); }
+    }
+
     async function uploadCVs(){
       const inp = document.getElementById('cvFiles');
       const out = document.getElementById('upMsg');
@@ -577,50 +688,41 @@ app.get('/', (req, res) => {
       });
       if(r.ok){
         out.textContent = 'Done.';
+        // Auto-collapse after successful upload
+        setTimeout(()=>{ toggleUpload(); }, 300);
         await loadPosition(CURRENT_POS);
       }else{
         out.textContent = 'Failed.';
       }
     }
 
+    // Delete CV
     async function deleteCV(name){
       if(!confirm('Delete this CV?')) return;
       const r = await fetch('/api/cv-delete', {
         method:'POST', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({ client: CURRENT_CLIENT, position: CURRENT_POS, name })
       });
-      if(r.ok){
-        await loadPosition(CURRENT_POS);
-      }
+      if(r.ok){ await loadPosition(CURRENT_POS); }
     }
 
-    function openAddPosition(){
-      const title = prompt('New position title:');
-      if(!title) return;
-      const salary = prompt('Salary (optional):') || '';
-      const location = prompt('Location (optional):') || '';
-      const experience = prompt('Experience (optional):') || '';
-      const benefits = prompt('Benefits (optional):') || '';
-      const notes = prompt('Notes (optional):') || '';
-      saveNewPosition(title, {salary, location, experience, benefits, notes});
-    }
-
-    async function saveNewPosition(title, details){
-      const r = await fetch('/api/position', {
+    // Delete Position
+    async function deletePosition(){
+      if(!confirm('Delete the entire position (files, notes, details)?')) return;
+      const r = await fetch('/api/position-delete', {
         method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ client: CURRENT_CLIENT, position: title, details })
+        body: JSON.stringify({ client: CURRENT_CLIENT, position: CURRENT_POS })
       });
       if(r.ok){
+        // Reload sidebar and clear main
         await pickClient(CURRENT_CLIENT);
-        const box=document.getElementById('positions');
-        Array.prototype.forEach.call(box.children, function(x){
-          if(x.textContent.startsWith(title+' ')){ x.click(); }
-        });
-      }else{
-        alert('Failed to add position');
+        document.getElementById('main').innerHTML = '<p class="muted">Position deleted.</p>';
+      } else {
+        alert('Delete failed.');
       }
     }
 
+    // start
     me().then(u => { if(u){ init(); } });
   </script>
   </body></html>`;
@@ -628,10 +730,12 @@ app.get('/', (req, res) => {
   res.send(html);
 });
 
+// -------------- Start --------------
 app.listen(PORT, () => {
-  // bootstrap folders only when running locally
-  try {
-    safeMkdir(DATA_DIR); safeMkdir(LOGO_DIR);
-  } catch {}
-  console.log('\\n🚀 GRID (Full Collaboration, Fixed) on http://localhost:'+PORT);
+  // Create top-level dirs if missing
+  safeMkdir(DATA_DIR); safeMkdir(LOGO_DIR);
+  console.log('\\n🚀 GRID (Self-Healing & Position Management) running on http://localhost:'+PORT);
+  console.log('   Logo: /logo  (place logo.png or logo.jpg in app folder)');
+  console.log('   Client logos: /logos/<Client>.png or .jpg');
+  console.log('   Uploads: now via dropdown; position delete with rules applied.');
 });
