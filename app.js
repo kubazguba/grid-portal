@@ -1,14 +1,20 @@
 /**
- * GRID — Talent Collaboration Portal (Hyreus)
- * -------------------------------------------------------------------
- * Includes:
- * - Branding: "GRID" everywhere, logo served from /logo (png/jpg).
- * - Sidebar: client logos, CV counts, active position highlight.
- * - Center header "<Client> — <Position>".
- * - Position Details panel (salary, location, experience, benefits, notes).
- * - Notes: add + delete (admins can delete all; clients only their own).
- * - Status toggle (Yes/Maybe/No/Neutral).
- * - Auth (admins/clients), client scoping, email notifications to admins.
+ * GRID — Full Collaboration Edition (Self-Managing)
+ * ----------------------------------------------------------------------------
+ * New in this build
+ * - Multiple CV upload (admins only), no extra deps (Base64 JSON upload).
+ * - CV delete (admins only).
+ * - Add Position (admins + clients) via white "+" icon at bottom of sidebar.
+ * - Auto-create folders & JSON skeleton for new positions.
+ * - Instant status overlay update (no full reload); emails sent in background.
+ * - Client user added: Kimm Phelan (kimm.phelan@pse.ie / psegrid1) for PSE Power.
+ *
+ * Still included
+ * - Auth (admins & clients), client scoping.
+ * - Notes add + delete (admin-any / client-own).
+ * - Position Details panel (editable).
+ * - Client logo auto-load; GRID branding + footer.
+ * - Email notifications to admins (status, note, new position).
  */
 
 const fs = require('fs');
@@ -18,23 +24,22 @@ const session = require('express-session');
 const nodemailer = require('nodemailer');
 
 const app = express();
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '25mb' }));
+app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 
 // ---------------- Config ----------------
 const PORT = process.env.PORT || 3000;
 const DATA_DIR = path.join(__dirname, 'data');
 const LOGO_DIR = path.join(__dirname, 'logos');
 
-// Users (add client users here)
+// Users
 const users = [
   { email: 'jakub@hyreus.co.uk', password: 'jakub', name: 'Jakub', role: 'admin' },
   { email: 'john@hyreus.co.uk',  password: 'john',  name: 'John',  role: 'admin' },
-  // Example client user:
-  // { email: 'client@psepower.ie', password: 'pse', name: 'PSE Client', role: 'client', clientId: 'PSE Power' },
+  { email: 'kimm.phelan@pse.ie', password: 'psegrid1', name: 'Kimm Phelan', role: 'client', clientId: 'PSE Power' },
 ];
 
-// Clients & positions (auto-creates folders)
+// Clients & initial positions (folders will be ensured at boot)
 const CLIENTS = {
   'PSE Power': ['Project Manager', 'Safety Advisor', 'Quantity Surveyor', 'Service Engineer'],
   'FlaktGroup': ['Project Manager', 'Sales Engineer', 'Service Technician'],
@@ -46,10 +51,10 @@ const CLIENTS = {
 
 const BRAND = { bg: '#4d4445', accent: '#696162', text: '#ffffff', lightCard: '#5a5253' };
 
-// Email (admins only)
-const NOTIFY_FROM = 'info@hyreus.co.uk';
-const NOTIFY_TO = ['jakub@hyreus.co.uk', 'john@hyreus.co.uk'];
-const SMTP_PASSWORD = 'wskrzesic12'; // local use
+// Email (admins only). Prefer env vars if present.
+const NOTIFY_FROM = process.env.NOTIFY_FROM || 'info@hyreus.co.uk';
+const NOTIFY_TO = (process.env.NOTIFY_TO || 'jakub@hyreus.co.uk,john@hyreus.co.uk').split(',');
+const SMTP_PASSWORD = process.env.SMTP_PASSWORD || 'wskrzesic12'; // replace with real App Password in prod
 
 const transporter = nodemailer.createTransport({
   host: 'smtp.office365.com',
@@ -60,21 +65,21 @@ const transporter = nodemailer.createTransport({
 
 // -------------- Helpers & bootstrap --------------
 function safeMkdir(p){ if(!fs.existsSync(p)) fs.mkdirSync(p, { recursive: true }); }
+function ensureClientPosition(client, position){
+  const pdir = path.join(DATA_DIR, client, position);
+  safeMkdir(path.join(pdir, 'files'));
+  const fb = path.join(pdir, 'feedback.json');
+  if (!fs.existsSync(fb)) fs.writeFileSync(fb, JSON.stringify({}, null, 2));
+  const det = path.join(pdir, 'details.json');
+  if (!fs.existsSync(det)) fs.writeFileSync(det, JSON.stringify(defaultDetails(), null, 2));
+}
 function ensureDirs(){
   safeMkdir(DATA_DIR);
   safeMkdir(LOGO_DIR);
-  // Create structure & files if missing
   Object.keys(CLIENTS).forEach(c => {
     const cdir = path.join(DATA_DIR, c);
     safeMkdir(cdir);
-    CLIENTS[c].forEach(pos => {
-      const pdir = path.join(cdir, pos);
-      safeMkdir(path.join(pdir, 'files'));
-      const fb = path.join(pdir, 'feedback.json');
-      if (!fs.existsSync(fb)) fs.writeFileSync(fb, JSON.stringify({}, null, 2));
-      const det = path.join(pdir, 'details.json');
-      if (!fs.existsSync(det)) fs.writeFileSync(det, JSON.stringify(defaultDetails(), null, 2));
-    });
+    CLIENTS[c].forEach(pos => ensureClientPosition(c, pos));
   });
 }
 function feedbackPath(client, position){
@@ -129,15 +134,31 @@ app.post('/api/logout', (req, res) => req.session.destroy(() => res.json({ ok: t
 app.get('/api/me', (req, res) => res.json({ user: req.session.user || null }));
 
 // -------------- Email helpers --------------
-async function sendEmail(type, { client, position, file, content, actor }){
+async function sendEmail(type, payload){
   const when = new Date().toLocaleString();
-  let subject, html;
+  let subject = '', html = '';
   if (type === 'status') {
+    const { client, position, file, content, actor } = payload;
     subject = `Status update – ${file}`;
     html = `<p><b>Client:</b> ${client}</p><p><b>Position:</b> ${position}</p><p><b>File:</b> ${file}</p><p><b>New status:</b> ${content}</p><p><b>By:</b> ${actor.name} &lt;${actor.email}&gt;</p><p>${when}</p>`;
-  } else {
+  } else if (type === 'note') {
+    const { client, position, file, content, actor } = payload;
     subject = `New note – ${file}`;
     html = `<p><b>Client:</b> ${client}</p><p><b>Position:</b> ${position}</p><p><b>File:</b> ${file}</p><p><b>Note:</b> ${content}</p><p><b>By:</b> ${actor.name} &lt;${actor.email}&gt;</p><p>${when}</p>`;
+  } else if (type === 'new_position') {
+    const { client, position, details, actor } = payload;
+    subject = `New Position Added – ${client}`;
+    html = `<p><b>Client:</b> ${client}</p><p><b>Position:</b> ${position}</p>
+            <p><b>By:</b> ${actor.name} &lt;${actor.email}&gt;</p>
+            <p><b>Details</b></p>
+            <ul>
+              <li>Salary: ${details.salary || '-'}</li>
+              <li>Location: ${details.location || '-'}</li>
+              <li>Experience: ${details.experience || '-'}</li>
+              <li>Benefits: ${details.benefits || '-'}</li>
+              <li>Notes: ${details.notes || '-'}</li>
+            </ul>
+            <p>${when}</p>`;
   }
   try { await transporter.sendMail({ from: NOTIFY_FROM, to: NOTIFY_TO, subject, html }); }
   catch (e) { console.error('Email error:', e.message); }
@@ -161,11 +182,27 @@ app.get('/api/positions', requireAuth, (req, res) => {
   if (u.role !== 'admin' && u.clientId !== client) return res.status(403).json({ error: 'forbidden' });
 
   const posDirs = listDirs(path.join(DATA_DIR, client));
-  const positions = posDirs.map(p => {
-    const count = listFiles(filesDirPath(client, p)).length;
-    return { name: p, count };
-  });
+  const positions = posDirs.map(p => ({
+    name: p,
+    count: listFiles(filesDirPath(client, p)).length
+  }));
   res.json({ positions });
+});
+
+// Add position (admins and client of same clientId)
+app.post('/api/position', requireAuth, async (req, res) => {
+  const { client, position, details } = req.body || {};
+  const u = req.session.user;
+  if (!client || !position) return res.status(400).json({ error: 'bad request' });
+  if (u.role !== 'admin' && u.clientId !== client) return res.status(403).json({ error: 'forbidden' });
+  ensureClientPosition(client, position);
+  if (details && typeof details === 'object') {
+    const dp = detailsPath(client, position);
+    writeJSON(dp, Object.assign(defaultDetails(), details));
+  }
+  // notify admins
+  sendEmail('new_position', { client, position, details: details || {}, actor: u }).catch(()=>{});
+  res.json({ ok: true });
 });
 
 app.get('/api/list', requireAuth, (req, res) => {
@@ -199,7 +236,6 @@ app.post('/api/details', requireAuth, (req, res) => {
   const u = req.session.user;
   if (!client || !position || !details) return res.status(400).json({ error: 'bad request' });
   if (u.role !== 'admin' && u.clientId !== client) return res.status(403).json({ error: 'forbidden' });
-
   const detPath = detailsPath(client, position);
   const merged = Object.assign(defaultDetails(), details);
   writeJSON(detPath, merged);
@@ -220,7 +256,7 @@ app.get('/api/file', requireAuth, (req, res) => {
   fs.createReadStream(fpath).pipe(res);
 });
 
-// Update status
+// Update status (optimistic)
 app.post('/api/status', requireAuth, async (req, res) => {
   const { client, position, file, status } = req.body || {};
   const u = req.session.user;
@@ -230,10 +266,12 @@ app.post('/api/status', requireAuth, async (req, res) => {
   const fbPath = feedbackPath(client, position);
   const fb = readJSON(fbPath, {});
   if (!fb[file]) fb[file] = { decision: 'neutral', notes: [] };
+  // Toggle to neutral if same non-neutral clicked
   fb[file].decision = (fb[file].decision === status && status !== 'neutral') ? 'neutral' : status;
   writeJSON(fbPath, fb);
-  await sendEmail('status', { client, position, file, content: fb[file].decision, actor: u });
-  res.json({ ok: true });
+  // fire-and-forget email
+  sendEmail('status', { client, position, file, content: fb[file].decision, actor: u }).catch(()=>{});
+  res.json({ ok: true, decision: fb[file].decision });
 });
 
 // Add note
@@ -245,10 +283,11 @@ app.post('/api/note', requireAuth, async (req, res) => {
   const fbPath = feedbackPath(client, position);
   const fb = readJSON(fbPath, {});
   if (!fb[file]) fb[file] = { decision: 'neutral', notes: [] };
-  fb[file].notes.unshift({ text: String(text).trim(), authorEmail: u.email, authorName: u.name, timestamp: new Date().toISOString() });
+  const note = { text: String(text).trim(), authorEmail: u.email, authorName: u.name, timestamp: new Date().toISOString() };
+  fb[file].notes.unshift(note);
   writeJSON(fbPath, fb);
-  await sendEmail('note', { client, position, file, content: text, actor: u });
-  res.json({ ok: true });
+  sendEmail('note', { client, position, file, content: text, actor: u }).catch(()=>{});
+  res.json({ ok: true, note });
 });
 
 // Delete note
@@ -271,8 +310,41 @@ app.post('/api/note-delete', requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
+// Upload CVs (admins only) — Base64 JSON, supports multiple sequential calls
+app.post('/api/upload', requireAuth, async (req, res) => {
+  const { client, position, files } = req.body || {};
+  const u = req.session.user;
+  if (u.role !== 'admin') return res.status(403).json({ error: 'admins only' });
+  if (!client || !position || !Array.isArray(files)) return res.status(400).json({ error: 'bad request' });
+  ensureClientPosition(client, position);
+  const dir = filesDirPath(client, position);
+  let saved = [];
+  for (const f of files) {
+    try {
+      const name = (f.name || 'unnamed').replace(/[/\\<>:"|?*\x00-\x1F]/g,'_').slice(0,200);
+      const b64 = (f.base64 || '').split(',').pop();
+      const buf = Buffer.from(b64, 'base64');
+      fs.writeFileSync(path.join(dir, name), buf);
+      saved.push(name);
+    } catch(e){
+      console.error('Upload error for one file:', e.message);
+    }
+  }
+  res.json({ ok: true, saved });
+});
+
+// Delete CV (admins only)
+app.post('/api/cv-delete', requireAuth, (req, res) => {
+  const { client, position, name } = req.body || {};
+  const u = req.session.user;
+  if (u.role !== 'admin') return res.status(403).json({ error: 'admins only' });
+  if (!client || !position || !name) return res.status(400).json({ error: 'bad request' });
+  const fpath = path.join(filesDirPath(client, position), name);
+  if (fs.existsSync(fpath)) fs.unlinkSync(fpath);
+  res.json({ ok: true });
+});
+
 // -------------- Logos --------------
-// Main logo (supports png or jpg)
 app.get('/logo', (req, res) => {
   const png = path.join(__dirname, 'logo.png');
   const jpg = path.join(__dirname, 'logo.jpg');
@@ -280,7 +352,6 @@ app.get('/logo', (req, res) => {
   if (fs.existsSync(jpg)) return res.sendFile(jpg);
   res.status(404).end();
 });
-// Client logos: /logos/<Client>  (route will resolve .png or .jpg)
 app.get('/logos/:client', (req, res) => {
   const id = req.params.client;
   const png = path.join(LOGO_DIR, `${id}.png`);
@@ -320,6 +391,9 @@ app.get('/', (req, res) => {
     .trash:hover{color:#fff}
     .footer{margin-top:auto;text-align:center;opacity:.7;font-size:12px;}
     .sep{height:1px;background:${BRAND.accent};margin:8px 0;}
+    .plus{display:flex;justify-content:center;align-items:center;width:100%;border:1px dashed ${BRAND.accent};border-radius:8px;padding:8px;cursor:pointer;opacity:.9;}
+    .plus:hover{filter:brightness(1.1)}
+    .pill{display:inline-block;border:1px solid ${BRAND.accent};border-radius:999px;padding:2px 8px;font-size:12px;opacity:.85}
   `;
 
   const html = `<!doctype html><html><head><meta charset="utf-8"/>
@@ -355,7 +429,7 @@ app.get('/', (req, res) => {
 
     function clientLogoImgTag(name){
       const src='/logos/'+encodeURIComponent(name);
-      return '<img src="'+src+'" onerror="this.style.display=\\'none\\'" style="width:140px;max-height:90px;object-fit:contain;border-radius:6px;border:1px solid ${BRAND.accent};"/>';
+      return '<img src="'+src+'" onerror="this.style.display=\'none\'" style="width:140px;max-height:90px;object-fit:contain;border-radius:6px;border:1px solid ${BRAND.accent};"/>';
     }
 
     async function init(){
@@ -376,6 +450,7 @@ app.get('/', (req, res) => {
       }
 
       left += '<div id="positions"></div>';
+      left += '<div id="addPosBtn" class="plus" onclick="openAddPosition()" title="+">➕</div>';
       left += '<div class="footer"><div class="sep"></div>powered by Hyreus</div>';
       left += '<div style="margin-top:8px;"><button onclick="logout()">Logout</button></div></aside>';
 
@@ -420,6 +495,8 @@ app.get('/', (req, res) => {
       document.getElementById('main').innerHTML = '<h2 style="margin-top:0;text-align:center;">'+(c||'')+'</h2><p style="text-align:center;">Select a position from the left.</p>';
     }
 
+    function safeId(name){ return name.replace(/[^a-zA-Z0-9]/g,'_'); }
+
     async function selectPosition(pos, el){
       CURRENT_POS=pos;
       // highlight active
@@ -429,16 +506,21 @@ app.get('/', (req, res) => {
       await loadPosition(pos);
     }
 
+    function overlayColor(dec){
+      if(dec==='yes') return '#1f6b3b55';
+      if(dec==='maybe') return '#b86e0055';
+      if(dec==='no') return '#7a1b1b55';
+      return '#0000';
+    }
+
     async function loadPosition(pos){
-      // load details + files
       const detailsResp = await api('/api/details?client='+encodeURIComponent(CURRENT_CLIENT)+'&pos='+encodeURIComponent(pos));
       const listResp = await api('/api/list?client='+encodeURIComponent(CURRENT_CLIENT)+'&pos='+encodeURIComponent(pos));
       const main = document.getElementById('main');
 
-      // header
       let h = '<div class="titleCentered">'+CURRENT_CLIENT+' — '+pos+'</div>';
 
-      // details summary
+      // details
       const d = (detailsResp.details || {});
       function fmt(v){ return v && String(v).trim() ? String(v) : '<span class="muted">Not provided</span>'; }
       h += '<div class="details" id="detBox">';
@@ -448,40 +530,48 @@ app.get('/', (req, res) => {
       h += '<div class="field"><div class="label">🧠 Experience</div><div>'+fmt(d.experience)+'</div></div>';
       h += '<div class="field"><div class="label">💰 Benefits</div><div>'+fmt(d.benefits)+'</div></div>';
       h += '<div class="field"><div class="label">🗒 Notes</div><div>'+fmt(d.notes)+'</div></div>';
-      h += '<div style="margin-top:8px;"><button onclick="editDetails()">Edit Details</button></div>';
+      h += '<div style="margin-top:8px;"><span class="pill" onclick="editDetails()">Edit Details</span></div>';
       h += '</div>';
 
       // files grid
       h += '<div class="grid">';
       (listResp.files||[]).forEach(f=>{
-        const safeId = f.replace(/[^a-zA-Z0-9]/g,'_');
+        const sid = safeId(f);
         const s = (listResp.status||{})[f] || { decision:'neutral', notes:[] };
-        let overlay = '#0000';
-        if(s.decision==='yes') overlay = '#1f6b3b55';
-        else if(s.decision==='maybe') overlay = '#b86e0055';
-        else if(s.decision==='no') overlay = '#7a1b1b55';
-        h += '<div class="card">';
-        h += '<div class="file"><a target="_blank" style="color:#a8d1ff;text-decoration:none;" href="/api/file?client='+encodeURIComponent(CURRENT_CLIENT)+'&pos='+encodeURIComponent(CURRENT_POS)+'&name='+encodeURIComponent(f)+'">'+f+'</a></div>';
-        h += '<div style="display:flex;gap:6px;flex-wrap:wrap;">';
-        h += '<button onclick="setStatus(\\''+f+'\\',\\'yes\\')">Yes</button>';
-        h += '<button onclick="setStatus(\\''+f+'\\',\\'maybe\\')">Maybe</button>';
-        h += '<button onclick="setStatus(\\''+f+'\\',\\'no\\')">No</button>';
-        h += '<button onclick="setStatus(\\''+f+'\\',\\'neutral\\')">Neutral</button>';
+        h += '<div class="card" id="card_'+sid+'">';
+        h += '<div class="file"><a target="_blank" style="color:#a8d1ff;text-decoration:none;" href="/api/file?client='+encodeURIComponent(CURRENT_CLIENT)+'&pos='+encodeURIComponent(CURRENT_POS)+'&name='+encodeURIComponent(f)+'">'+f+'</a>';
+        if(ME.role==='admin'){ h += ' <button class="trash" title="Delete CV" onclick="deleteCV(\''+f+'\')">🗑️</button>'; }
         h += '</div>';
-        h += '<textarea id="nt'+safeId+'" class="note" placeholder="Add a note..."></textarea>';
-        h += '<div><button onclick="addNote(\\''+f+'\\')">Add Note</button></div>';
-        h += '<div style="position:absolute;inset:0;border-radius:10px;pointer-events:none;background:'+overlay+'"></div>';
-        h += '<div style="display:flex;flex-direction:column;gap:6px;margin-top:6px;">';
+        h += '<div style="display:flex;gap:6px;flex-wrap:wrap;">';
+        h += '<button onclick="setStatusUI(\''+f+'\',\'yes\')">Yes</button>';
+        h += '<button onclick="setStatusUI(\''+f+'\',\'maybe\')">Maybe</button>';
+        h += '<button onclick="setStatusUI(\''+f+'\',\'no\')">No</button>';
+        h += '<button onclick="setStatusUI(\''+f+'\',\'neutral\')">Neutral</button>';
+        h += '</div>';
+        h += '<textarea id="nt'+sid+'" class="note" placeholder="Add a note..."></textarea>';
+        h += '<div><button onclick="addNote(\''+f+'\')">Add Note</button></div>';
+        h += '<div id="ov_'+sid+'" style="position:absolute;inset:0;border-radius:10px;pointer-events:none;background:'+overlayColor(s.decision)+'"></div>';
+        h += '<div style="display:flex;flex-direction:column;gap:6px;margin-top:6px;" id="notes_'+sid+'">';
         (s.notes||[]).forEach(n=>{
           const canDel = (ME.role==='admin') || (n.authorEmail===ME.email);
-          h += '<div class="noteRow">';
+          h += '<div class="noteRow" data-ts="'+n.timestamp+'">';
           h += '<div><div><b>'+(n.authorName||'')+'</b> &lt;'+n.authorEmail+'&gt; — '+new Date(n.timestamp).toLocaleString()+'</div><div>'+n.text+'</div></div>';
-          h += (canDel ? '<button class="trash" onclick="delNote(\\''+f+'\\',\\''+n.timestamp+'\\')">🗑️</button>' : '');
+          h += (canDel ? '<button class="trash" onclick="delNote(\''+f+'\',\''+n.timestamp+'\')">🗑️</button>' : '');
           h += '</div>';
         });
         h += '</div></div>'; // card
       });
       h += '</div>'; // grid
+
+      // Upload button (admins only)
+      if(ME.role==='admin'){
+        h += '<div style="margin-top:12px;padding:8px;border:1px dashed ${BRAND.accent};border-radius:8px;">';
+        h += '<div style="margin-bottom:6px;font-weight:600;">Upload CVs</div>';
+        h += '<input id="cvFiles" type="file" multiple /> ';
+        h += '<button onclick="uploadCVs()">Upload</button> ';
+        h += '<span id="upMsg" class="muted"></span>';
+        h += '</div>';
+      }
 
       main.innerHTML = h;
       window._currentDetails = d;
@@ -517,34 +607,127 @@ app.get('/', (req, res) => {
       if (r.ok) { loadPosition(CURRENT_POS); } else { alert('Failed to save'); }
     }
 
-    async function setStatus(f,s){
-      await fetch('/api/status',{
+    // Optimistic status
+    async function setStatusUI(file, s){
+      const oid = 'ov_'+safeId(file);
+      const el = document.getElementById(oid);
+      if(el) el.style.background = (s==='neutral') ? '#0000' : overlayColor(s);
+      // Fire API
+      const r = await fetch('/api/status',{
         method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({client:CURRENT_CLIENT,position:CURRENT_POS,file:f,status:s})
+        body:JSON.stringify({client:CURRENT_CLIENT,position:CURRENT_POS,file:file,status:s})
       });
-      await loadPosition(CURRENT_POS);
+      if(r.ok){
+        const j = await r.json();
+        // Ensure UI reflects server decision (handles toggle-to-neutral)
+        if(el) el.style.background = overlayColor(j.decision || s);
+      }
     }
 
     async function addNote(f){
-      const id = 'nt'+f.replace(/[^a-zA-Z0-9]/g,'_');
+      const id = 'nt'+safeId(f);
       const t = document.getElementById(id).value.trim();
       if(!t) return;
-      await fetch('/api/note',{
+      const r = await fetch('/api/note',{
         method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({client:CURRENT_CLIENT,position:CURRENT_POS,file:f,text:t})
       });
-      document.getElementById(id).value='';
-      await loadPosition(CURRENT_POS);
+      if(r.ok){
+        document.getElementById(id).value='';
+        // Immediately prepend note in UI
+        const j = await r.json();
+        const n = j.note;
+        const box = document.getElementById('notes_'+safeId(f));
+        if(box){
+          const canDel = (ME.role==='admin') || (n.authorEmail===ME.email);
+          const row = document.createElement('div');
+          row.className = 'noteRow';
+          row.setAttribute('data-ts', n.timestamp);
+          row.innerHTML = '<div><div><b>'+(n.authorName||'')+'</b> &lt;'+n.authorEmail+'&gt; — '+new Date(n.timestamp).toLocaleString()+'</div><div>'+n.text+'</div></div>' + (canDel ? '<button class="trash" onclick="delNote(\''+f+'\',\''+n.timestamp+'\')">🗑️</button>' : '');
+          box.prepend(row);
+        }
+      }
     }
 
     async function delNote(file, ts){
-      if(!confirm('Delete this note?')) return;
       const r = await fetch('/api/note-delete', {
         method:'POST',
         headers:{'Content-Type':'application/json'},
         body: JSON.stringify({ client: CURRENT_CLIENT, position: CURRENT_POS, file: file, timestamp: ts })
       });
-      if(r.ok){ await loadPosition(CURRENT_POS); } else { alert('Failed to delete'); }
+      if(r.ok){
+        // remove row from UI
+        const box = document.getElementById('notes_'+safeId(file));
+        if(box){
+          const rows = box.querySelectorAll('.noteRow');
+          rows.forEach(row => { if(row.getAttribute('data-ts')===ts){ row.remove(); } });
+        }
+      } else { alert('Failed to delete'); }
+    }
+
+    // Upload CVs (admins only). Reads files to base64 and sends JSON.
+    async function uploadCVs(){
+      const inp = document.getElementById('cvFiles');
+      const out = document.getElementById('upMsg');
+      if(!inp || !inp.files || !inp.files.length) return;
+      out.textContent = 'Uploading...';
+      const files = await Promise.all(Array.from(inp.files).map(f => new Promise(res => {
+        const r = new FileReader();
+        r.onload = () => res({ name: f.name, base64: r.result });
+        r.readAsDataURL(f);
+      })));
+      const r = await fetch('/api/upload', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ client: CURRENT_CLIENT, position: CURRENT_POS, files })
+      });
+      if(r.ok){
+        out.textContent = 'Done.';
+        // Append new items to grid by reloading this position lightweight
+        await loadPosition(CURRENT_POS);
+      }else{
+        out.textContent = 'Failed.';
+      }
+    }
+
+    async function deleteCV(name){
+      if(!confirm('Delete this CV?')) return;
+      const r = await fetch('/api/cv-delete', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ client: CURRENT_CLIENT, position: CURRENT_POS, name })
+      });
+      if(r.ok){
+        await loadPosition(CURRENT_POS);
+      }
+    }
+
+    // Add Position (admins + client owner). Simple inline form prompt.
+    function openAddPosition(){
+      const title = prompt('New position title:');
+      if(!title) return;
+      const salary = prompt('Salary (optional):') || '';
+      const location = prompt('Location (optional):') || '';
+      const experience = prompt('Experience (optional):') || '';
+      const benefits = prompt('Benefits (optional):') || '';
+      const notes = prompt('Notes (optional):') || '';
+      saveNewPosition(title, {salary, location, experience, benefits, notes});
+    }
+
+    async function saveNewPosition(title, details){
+      const r = await fetch('/api/position', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ client: CURRENT_CLIENT, position: title, details })
+      });
+      if(r.ok){
+        // reload positions list & select new one
+        await pickClient(CURRENT_CLIENT);
+        // auto-select the new position
+        const box=document.getElementById('positions');
+        Array.prototype.forEach.call(box.children, function(x){
+          if(x.textContent.startsWith(title+' ')){ x.click(); }
+        });
+      }else{
+        alert('Failed to add position');
+      }
     }
 
     // start
@@ -558,9 +741,9 @@ app.get('/', (req, res) => {
 // -------------- Start --------------
 app.listen(PORT, () => {
   ensureDirs();
-  console.log('\\n🚀 GRID (Hyreus) running on http://localhost:'+PORT);
-  console.log('   Main logo path: /logo  (place logo.png or logo.jpg in app folder)');
+  console.log('\n🚀 GRID (Full Collaboration) running on http://localhost:'+PORT);
+  console.log('   Logo: /logo  (place logo.png or logo.jpg in app folder)');
   console.log('   Client logos: /logos/<Client>.png or .jpg');
-  console.log('   Position details stored per role as details.json');
+  console.log('   New positions auto-create folders; uploads use Base64 JSON (no multer needed).');
   console.log('   Login hint shown only on localhost.');
 });
