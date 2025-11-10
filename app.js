@@ -722,24 +722,29 @@ app.get('/', (req, res) => {
       await loadClients();
     }
 
-    async function loadClients(){
-      const j = await api('/api/clients');
-     let html = '<select id="clientDropdown" onchange="pickClient(this.value)" style="width:100%;padding:6px;border-radius:8px;background:#40393a;color:#fff;border:1px solid #696162;">';
-html += '<option value="">-- Select Client --</option>';
-(j.clients || []).forEach(c=>{
-  html += '<option value="'+c+'" '+(c===CURRENT_CLIENT?'selected':'')+'>'+c+'</option>';
-});
-html += '</select>';
-html += '<div style="margin-top:6px;display:flex;justify-content:space-between;align-items:center;">';
-html += '<div class="plus" style="flex:1;margin:0;" onclick="openAddClient()">➕ Add Client</div>';
-html += '<button class="iconBtn" onclick="if(document.getElementById(\'clientDropdown\').value) delClient(document.getElementById(\'clientDropdown\').value)">🗑️</button>';
-html += '</div>';
-box.innerHTML = html;
-        if((j.clients||[]).length && !CURRENT_CLIENT){ pickClient(j.clients[0]); }
-      }else{
-        pickClient(ME.clientId);
-      }
-    }
+async function loadClients(){
+  const j = await api('/api/clients');
+  const box = document.getElementById('clientList');  // ✅ define the target box
+
+  let html = '<select id="clientDropdown" onchange="pickClient(this.value)" style="width:100%;padding:6px;border-radius:8px;background:#40393a;color:#fff;border:1px solid #696162;">';
+  html += '<option value="">-- Select Client --</option>';
+  (j.clients || []).forEach(c=>{
+    html += '<option value="'+c+'" '+(c===CURRENT_CLIENT?'selected':'')+'>'+c+'</option>';
+  });
+  html += '</select>';
+  html += '<div style="margin-top:6px;display:flex;justify-content:space-between;align-items:center;">';
+  html += '<div class="plus" style="flex:1;margin:0;" onclick="openAddClient()">➕ Add Client</div>';
+  html += '<button class="iconBtn" onclick="if(document.getElementById(\'clientDropdown\').value) delClient(document.getElementById(\'clientDropdown\').value)">🗑️</button>';
+  html += '</div>';
+
+  box.innerHTML = html;
+
+  if ((j.clients || []).length && !CURRENT_CLIENT) {
+    pickClient(j.clients[0]);
+  } else if (ME.role === 'client') {
+    pickClient(ME.clientId);
+  }
+}
 
     async function pickClient(c){
       CURRENT_CLIENT=c;
