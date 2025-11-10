@@ -724,24 +724,67 @@ app.get('/', (req, res) => {
 
 async function loadClients(){
   const j = await api('/api/clients');
-  const box = document.getElementById('clientList');  // ✅ define the target box
+  const box = document.getElementById('clientList');
+  box.innerHTML = '';
 
-  let html = '<select id="clientDropdown" onchange="pickClient(this.value)" style="width:100%;padding:6px;border-radius:8px;background:#40393a;color:#fff;border:1px solid #696162;">';
-  html += '<option value="">-- Select Client --</option>';
-  (j.clients || []).forEach(c=>{
-    html += '<option value="'+c+'" '+(c===CURRENT_CLIENT?'selected':'')+'>'+c+'</option>';
+  // <select id="clientDropdown">...</select>
+  const select = document.createElement('select');
+  select.id = 'clientDropdown';
+  select.style.width = '100%';
+  select.style.padding = '6px';
+  select.style.borderRadius = '8px';
+  select.style.background = '#40393a';
+  select.style.color = '#fff';
+  select.style.border = '1px solid #696162';
+
+  const def = document.createElement('option');
+  def.value = '';
+  def.textContent = '-- Select Client --';
+  select.appendChild(def);
+
+  (j.clients || []).forEach(c => {
+    const opt = document.createElement('option');
+    opt.value = c;
+    opt.textContent = c;
+    if (c === CURRENT_CLIENT) opt.selected = true;
+    select.appendChild(opt);
   });
-  html += '</select>';
-  html += '<div style="margin-top:6px;display:flex;justify-content:space-between;align-items:center;">';
-  html += '<div class="plus" style="flex:1;margin:0;" onclick="openAddClient()">➕ Add Client</div>';
-  html += '<button class="iconBtn" onclick="if(document.getElementById(\'clientDropdown\').value) delClient(document.getElementById(\'clientDropdown\').value)">🗑️</button>';
-  html += '</div>';
 
-  box.innerHTML = html;
+  select.addEventListener('change', (e) => {
+    if (e.target.value) pickClient(e.target.value);
+  });
+
+  // wiersz z "Add Client" i koszem
+  const row = document.createElement('div');
+  row.style.marginTop = '6px';
+  row.style.display = 'flex';
+  row.style.gap = '6px';
+  row.style.alignItems = 'center';
+
+  const addBtn = document.createElement('div');
+  addBtn.className = 'plus';
+  addBtn.style.flex = '1';
+  addBtn.style.margin = '0';
+  addBtn.textContent = '➕ Add Client';
+  addBtn.addEventListener('click', openAddClient);
+
+  const delBtn = document.createElement('button');
+  delBtn.className = 'iconBtn';
+  delBtn.textContent = '🗑️';
+  delBtn.addEventListener('click', () => {
+    const val = select.value;
+    if (val) delClient(val);
+  });
+
+  row.appendChild(addBtn);
+  row.appendChild(delBtn);
+
+  box.appendChild(select);
+  box.appendChild(row);
 
   if ((j.clients || []).length && !CURRENT_CLIENT) {
     pickClient(j.clients[0]);
-  } else if (ME.role === 'client') {
+  } else if (ME && ME.role === 'client') {
     pickClient(ME.clientId);
   }
 }
