@@ -617,7 +617,12 @@ app.get('/', (req, res) => {
     .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;}
     .card{position:relative;border:1px solid ${BRAND.accent};border-radius:10px;background:#463f40;padding:12px;display:flex;flex-direction:column;gap:8px;}
     .file{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-    .note{width:100%}
+.note{
+  width:calc(100% - 8px);
+  box-sizing:border-box;
+  margin:0;
+  resize:vertical;
+}
     .details{background:${BRAND.lightCard};border:1px solid ${BRAND.accent};border-radius:10px;padding:12px;margin-bottom:12px;}
     .details h3{margin:0 0 8px 0;text-align:left;}
     .titleCentered{font-size:20px;font-weight:700;text-align:center;margin:0 0 12px 0;}
@@ -629,7 +634,19 @@ app.get('/', (req, res) => {
     .trash:hover{color:#fff}
     .footer{margin-top:auto;text-align:center;opacity:.7;font-size:12px;}
     .sep{height:1px;background:${BRAND.accent};margin:8px 0;}
-    .plus{display:flex;justify-content:center;align-items:center;width:calc(100% - 4px);margin:0 auto;border:1px dashed ${BRAND.accent};border-radius:8px;padding:8px;cursor:pointer;opacity:.9;}
+.plus{
+  display:flex;
+  justify-content:center;
+  align-items:center;
+  width:calc(100% - 4px);
+  margin:0 auto;
+  border:1px dashed ${BRAND.accent};
+  border-radius:8px;
+  padding:8px;
+  cursor:pointer;
+  opacity:.9;
+  text-align:center;
+}
     .plus:hover{filter:brightness(1.1)}
     .pill{display:inline-block;border:1px solid ${BRAND.accent};border-radius:999px;padding:2px 8px;font-size:12px;opacity:.85}
     .clientRow{display:flex;justify-content:space-between;align-items:center;border:1px solid ${BRAND.accent};border-radius:8px;padding:6px;margin-bottom:6px;}
@@ -695,7 +712,7 @@ app.get('/', (req, res) => {
       }
 
       left += '<div id="positions"></div>';
-      left += '<div id="addPosBtn" class="plus" onclick="openAddPosition()" title="+">➕</div>';
+   left += '<div id="addPosBtn" class="plus" onclick="openAddPosition()" title="Add Position">➕ Add Position</div>';
       left += '<div class="footer"><div class="sep"></div>powered by Hyreus</div>';
       left += '<div style="margin-top:8px;"><button onclick="logout()">Logout</button></div></aside>';
 
@@ -707,14 +724,17 @@ app.get('/', (req, res) => {
 
     async function loadClients(){
       const j = await api('/api/clients');
-      if(ME.role==='admin'){
-        const box=document.getElementById('clientList'); box.innerHTML='';
-        (j.clients||[]).forEach(c=>{
-          const row = document.createElement('div'); row.className='clientRow';
-          row.innerHTML = '<div class="clientName">'+c+'</div><button class="iconBtn" onclick="delClient(\\''+c+'\\')" title="Delete">🗑️</button>';
-          row.onclick = (e)=>{ if(e.target.tagName==='BUTTON') return; pickClient(c); };
-          box.appendChild(row);
-        });
+     let html = '<select id="clientDropdown" onchange="pickClient(this.value)" style="width:100%;padding:6px;border-radius:8px;background:#40393a;color:#fff;border:1px solid #696162;">';
+html += '<option value="">-- Select Client --</option>';
+(j.clients || []).forEach(c=>{
+  html += '<option value="'+c+'" '+(c===CURRENT_CLIENT?'selected':'')+'>'+c+'</option>';
+});
+html += '</select>';
+html += '<div style="margin-top:6px;display:flex;justify-content:space-between;align-items:center;">';
+html += '<div class="plus" style="flex:1;margin:0;" onclick="openAddClient()">➕ Add Client</div>';
+html += '<button class="iconBtn" onclick="if(document.getElementById(\'clientDropdown\').value) delClient(document.getElementById(\'clientDropdown\').value)">🗑️</button>';
+html += '</div>';
+box.innerHTML = html;
         if((j.clients||[]).length && !CURRENT_CLIENT){ pickClient(j.clients[0]); }
       }else{
         pickClient(ME.clientId);
@@ -908,8 +928,10 @@ app.get('/', (req, res) => {
         const s = (listResp.status||{})[f] || { decision:'neutral', notes:[] };
         h += '<div class="card" id="card_'+sid+'">';
         h += '<div class="file"><a target="_blank" style="color:#a8d1ff;text-decoration:none;" href="/api/file?client='+encodeURIComponent(CURRENT_CLIENT)+'&pos='+encodeURIComponent(CURRENT_POS)+'&name='+encodeURIComponent(f)+'">'+f+'</a>';
-        if(ME.role==='admin'){ h += ' <button class="trash" title="Delete CV" onclick="deleteCV(\\''+f+'\\')">🗑️</button>'; }
-        h += '</div>';
+       h += '</div>'; // close file title line
+if(ME.role==='admin'){
+  h += '<button class="trash" title="Delete CV" onclick="deleteCV(\\''+f+'\\')" style="position:absolute;bottom:8px;right:8px;">🗑️</button>';
+}
         h += '<div style="display:flex;gap:6px;flex-wrap:wrap;">';
         h += '<button onclick="setStatusUI(\\''+f+'\\',\\'yes\\')">Yes</button>';
         h += '<button onclick="setStatusUI(\\''+f+'\\',\\'maybe\\')">Maybe</button>';
