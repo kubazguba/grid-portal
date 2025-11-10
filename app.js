@@ -622,6 +622,19 @@ app.get('/', (req, res) => {
   box-sizing:border-box;
   margin:0;
   resize:vertical;
+}.plus{
+  display:flex;
+  justify-content:center;
+  align-items:center;
+  width:100%;              /* ← wcześniej było calc(100% - 4px) */
+  box-sizing:border-box;   /* ← pilnuje żeby padding nie rozszerzał szerokości */
+  margin:0 auto;
+  border:1px dashed ${BRAND.accent};
+  border-radius:8px;
+  padding:8px;
+  cursor:pointer;
+  opacity:.9;
+  text-align:center;
 }
     .details{background:${BRAND.lightCard};border:1px solid ${BRAND.accent};border-radius:10px;padding:12px;margin-bottom:12px;}
     .details h3{margin:0 0 8px 0;text-align:left;}
@@ -706,7 +719,6 @@ app.get('/', (req, res) => {
       if(u.role==='admin'){
         left += '<div style="text-align:center;opacity:.9;font-weight:600;">Admin view</div>';
         left += '<div style="margin-top:4px;"><div id="clientList"></div></div>';
-        left += '<div class="plus" onclick="openAddClient()" title="Add Client">➕ Add Client</div>';
       } else if(u.role==='client' && u.clientId){
         left += '<div style="text-align:center;">'+clientLogoImgTag(u.clientId)+'<div style="margin-top:6px;">'+u.clientId+'</div></div>';
       }
