@@ -1,16 +1,22 @@
 /**
- * GRID — Firebase Cloud Edition
+ * GRID — Firebase Cloud Edition v1.1
  * ------------------------------------------------------------
  * Data: Firestore (clients, positions, notes, statuses, users)
  * Files: Firebase Storage (CVs + client logos)
  * Auth: Simple session (admins hardcoded; client users per-client)
  * Emails: Office365 via nodemailer (info@hyreus.co.uk)
  *
- * Admins (hardcoded now):
+ * Admins:
  *  - jakub@hyreus.co.uk / jakubgrid1
  *  - john@hyreus.co.uk  / johngrid1
  *
- * IMPORTANT: Set Render env vars below (see end of file comments).
+ * ===== Render ENV VARS to set =====
+ * 1) FIREBASE_SERVICE_ACCOUNT   (paste full JSON)
+ * 2) FIREBASE_PROJECT_ID        = grid-f4a70
+ * 3) FIREBASE_STORAGE_BUCKET    = grid-f4a70.firebasestorage.app   (or your .appspot.com if shown)
+ * 4) NOTIFY_FROM                = info@hyreus.co.uk
+ * 5) NOTIFY_TO                  = jakub@hyreus.co.uk,john@hyreus.co.uk
+ * 6) SMTP_PASSWORD              = <Outlook app password for info@>
  */
 
 const express = require('express');
@@ -25,7 +31,6 @@ const path = require('path');
 const admin = require('firebase-admin');
 
 function initFirebase() {
-  // Expect a single JSON env var with service account
   const svc = process.env.FIREBASE_SERVICE_ACCOUNT;
   if (!svc) {
     console.error('FIREBASE_SERVICE_ACCOUNT missing. Paste your service account JSON into this env var.');
@@ -34,7 +39,7 @@ function initFirebase() {
   const creds = JSON.parse(svc);
   const projectId = process.env.FIREBASE_PROJECT_ID || creds.project_id || 'grid-f4a70';
   const storageBucket =
-    process.env.FIREBASE_STORAGE_BUCKET || `${projectId}.appspot.com`; // default standard bucket
+    process.env.FIREBASE_STORAGE_BUCKET || `${projectId}.appspot.com`;
 
   admin.initializeApp({
     credential: admin.credential.cert(creds),
@@ -57,7 +62,7 @@ app.use(bodyParser.urlencoded({ extended: true, limit: '25mb' }));
 
 const PORT = process.env.PORT || 3000;
 
-// Simple brand palette
+// Brand palette
 const BRAND = { bg: '#4d4445', accent: '#696162', text: '#ffffff', lightCard: '#5a5253' };
 
 // Admin users (hardcoded)
@@ -92,10 +97,7 @@ function requireAuth(req, res, next) {
   if (req.session && req.session.user) return next();
   res.status(401).json({ error: 'unauthorized' });
 }
-
-function isAdmin(req) {
-  return req.session?.user?.role === 'admin';
-}
+function isAdmin(req) { return req.session?.user?.role === 'admin'; }
 
 // -----------------------------
 // Email helper
@@ -167,17 +169,11 @@ async function sendEmail(type, payload) {
 // -----------------------------
 // Firestore helpers
 // -----------------------------
-const colClients = () => db.collection('clients'); // doc id = client name
-
-async function getClientDoc(client) {
-  if (!client) return null;
-  return colClients().doc(client);
-}
+const colClients = () => db.collection('clients');
 
 async function getPositionRef(client, position) {
   return colClients().doc(client).collection('positions').doc(position);
 }
-
 function defaultDetails() {
   return { salary: "", location: "", experience: "", benefits: "", notes: "" };
 }
@@ -193,7 +189,7 @@ app.post('/api/login', async (req, res) => {
     req.session.user = { email: adminUser.email, name: adminUser.name, role: 'admin' };
     return res.json({ ok: true, user: req.session.user });
   }
-  // Client user? (scan all clients' users for match)
+  // Client user?
   const snap = await colClients().get();
   let found = null, clientId = null;
   for (const doc of snap.docs) {
@@ -227,7 +223,7 @@ app.get('/api/clients', requireAuth, async (req, res) => {
   }
 });
 
-// Client metadata (logo or text)
+// Client metadata (logo if exists)
 app.get('/api/client-meta', requireAuth, async (req, res) => {
   const { client } = req.query || {};
   if (!client) return res.status(400).json({ error: 'missing client' });
@@ -270,7 +266,6 @@ app.post('/api/client-delete', requireAuth, async (req, res) => {
   if (!name) return res.status(400).json({ error: 'client name required' });
   const ref = colClients().doc(name);
 
-  // delete subcollections (users, positions)
   const users = await ref.collection('users').get();
   for (const d of users.docs) await d.ref.delete();
 
@@ -279,7 +274,6 @@ app.post('/api/client-delete', requireAuth, async (req, res) => {
 
   await ref.delete();
 
-  // delete storage prefixes (logos + CVs)
   try { await bucket.deleteFiles({ prefix: `logos/${name}` }); } catch {}
   try { await bucket.deleteFiles({ prefix: `files/${name}` }); } catch {}
 
@@ -309,15 +303,12 @@ app.post('/api/client-edit', requireAuth, async (req, res) => {
   }
   await ref.set(updates, { merge: true });
 
-  // Renaming client (optional)
   if (newName && newName !== name) {
     const newRef = colClients().doc(newName);
     const newDoc = Object.assign({}, (await ref.get()).data() || {});
     await newRef.set(newDoc, { merge: true });
 
-    // Move subcollections
-    const subNames = ['users', 'positions'];
-    for (const sub of subNames) {
+    for (const sub of ['users', 'positions']) {
       const subSnap = await ref.collection(sub).get();
       for (const d of subSnap.docs) {
         await newRef.collection(sub).doc(d.id).set(d.data());
@@ -326,7 +317,6 @@ app.post('/api/client-edit', requireAuth, async (req, res) => {
     }
     await ref.delete();
 
-    // Move logos + files in storage (best-effort)
     try {
       const [files] = await bucket.getFiles({ prefix: `files/${name}/` });
       for (const f of files) {
@@ -469,7 +459,7 @@ app.get('/api/file', requireAuth, async (req, res) => {
   file.createReadStream().on('error', () => res.status(500).end()).pipe(res);
 });
 
-// status
+// status toggle
 app.post('/api/status', requireAuth, async (req, res) => {
   const { client, position, file, status } = req.body || {};
   const u = req.session.user;
@@ -489,7 +479,7 @@ app.post('/api/status', requireAuth, async (req, res) => {
   res.json({ ok: true, decision: newDecision });
 });
 
-// note add/delete
+// note add
 app.post('/api/note', requireAuth, async (req, res) => {
   const { client, position, file, text } = req.body || {};
   const u = req.session.user;
@@ -510,6 +500,7 @@ app.post('/api/note', requireAuth, async (req, res) => {
   res.json({ ok: true, note });
 });
 
+// note delete (admin or author)
 app.post('/api/note-delete', requireAuth, async (req, res) => {
   const { client, position, file, timestamp } = req.body || {};
   const u = req.session.user;
@@ -605,7 +596,7 @@ app.get('/logo', (req, res) => {
 });
 
 // -----------------------------
-// Minimal UI (same layout, now backed by Firebase APIs above)
+// Minimal UI (updated v1.1)
 // -----------------------------
 app.get('/', (req, res) => {
   const local =
@@ -615,6 +606,7 @@ app.get('/', (req, res) => {
     html,body{height:100%} body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:${BRAND.bg};color:${BRAND.text};}
     .wrap{max-width:1200px;margin:0 auto;padding:20px;}
     input,select,textarea{background:#40393a;color:#fff;border:1px solid ${BRAND.accent};border-radius:8px;padding:8px;}
+    textarea{resize:vertical;max-height:120px;overflow:auto;}
     button{border:1px solid ${BRAND.accent};background:#40393a;color:#fff;border-radius:8px;padding:8px 12px;cursor:pointer;}
     button:hover{filter:brightness(1.06)}
     .layout{display:grid;grid-template-columns:280px 1fr;gap:16px;}
@@ -637,13 +629,14 @@ app.get('/', (req, res) => {
     .trash:hover{color:#fff}
     .footer{margin-top:auto;text-align:center;opacity:.7;font-size:12px;}
     .sep{height:1px;background:${BRAND.accent};margin:8px 0;}
-    .plus{display:flex;justify-content:center;align-items:center;width:100%;border:1px dashed ${BRAND.accent};border-radius:8px;padding:8px;cursor:pointer;opacity:.9;}
+    .plus{display:flex;justify-content:center;align-items:center;width:calc(100% - 4px);margin:0 auto;border:1px dashed ${BRAND.accent};border-radius:8px;padding:8px;cursor:pointer;opacity:.9;}
     .plus:hover{filter:brightness(1.1)}
     .pill{display:inline-block;border:1px solid ${BRAND.accent};border-radius:999px;padding:2px 8px;font-size:12px;opacity:.85}
     .clientRow{display:flex;justify-content:space-between;align-items:center;border:1px solid ${BRAND.accent};border-radius:8px;padding:6px;margin-bottom:6px;}
     .clientName{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-right:8px;}
     .iconBtn{background:transparent;border:1px solid ${BRAND.accent};border-radius:8px;padding:2px 6px;font-size:14px;color:#ddd;cursor:pointer;}
     .iconBtn:hover{filter:brightness(1.2)}
+    .showMore{cursor:pointer;text-decoration:underline;opacity:.85}
   `;
 
   const html = `<!doctype html><html><head><meta charset="utf-8"/>
@@ -722,7 +715,7 @@ app.get('/', (req, res) => {
           row.onclick = (e)=>{ if(e.target.tagName==='BUTTON') return; pickClient(c); };
           box.appendChild(row);
         });
-        if((j.clients||[]).length){ pickClient(j.clients[0]); }
+        if((j.clients||[]).length && !CURRENT_CLIENT){ pickClient(j.clients[0]); }
       }else{
         pickClient(ME.clientId);
       }
@@ -739,6 +732,7 @@ app.get('/', (req, res) => {
       });
       document.getElementById('main').innerHTML = '<h2 style="margin-top:0;text-align:center;">'+(c||'')+'</h2>' +
         (ME.role==='admin' ? adminClientPanelsHTML() : '<p style="text-align:center;">Select a position from the left.</p>');
+      if(ME.role==='admin') await refreshUsers();
     }
 
     function adminClientPanelsHTML(){
@@ -774,21 +768,20 @@ app.get('/', (req, res) => {
     }
 
     function openAddClient(){
-      const name = prompt('Client name:'); if(!name) return;
-      const input = document.createElement('input'); input.type='file'; input.accept='image/png,image/jpeg';
-      input.onchange = async ()=>{
-        const f = input.files[0];
-        let base64 = null;
-        if (f) base64 = await readAsDataURL(f);
-        await api('/api/client-add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,logoBase64:base64})});
-        await loadClients();
-      };
-      input.click();
+      const name = prompt('Client name:'); 
+      if(!name) return;
+      api('/api/client-add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})})
+        .then(async ()=>{ 
+          await loadClients(); 
+          pickClient(name);
+        })
+        .catch(()=>alert('Failed to add client'));
     }
 
     async function delClient(name){
       if(!confirm('Delete client "'+name+'"? This removes all positions, users and files.')) return;
       await api('/api/client-delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});
+      CURRENT_CLIENT = '';
       await loadClients();
       document.getElementById('positions').innerHTML='';
       document.getElementById('main').innerHTML='';
@@ -797,20 +790,27 @@ app.get('/', (req, res) => {
     async function promptEditClientName(){
       const newName = prompt('New client name:', CURRENT_CLIENT); if(!newName || newName===CURRENT_CLIENT) return;
       await api('/api/client-edit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:CURRENT_CLIENT,newName})});
+      CURRENT_CLIENT = newName;
       await loadClients();
+      pickClient(newName);
     }
 
     async function uploadLogo(){
-      const inp=document.getElementById('logoFile'); if(!inp || !inp.files || !inp.files[0]){ alert('Choose a logo file first'); return; }
+      if(!CURRENT_CLIENT){ alert('Pick a client first'); return; }
+      const inp=document.getElementById('logoFile'); 
+      if(!inp || !inp.files || !inp.files[0]){ alert('Choose a logo file first'); return; }
       const base64 = await readAsDataURL(inp.files[0]);
       await api('/api/client-edit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:CURRENT_CLIENT,logoBase64:base64})});
-      alert('Logo updated.');
+      await loadClients();     // refresh sidebar so logo appears
+      pickClient(CURRENT_CLIENT);
     }
 
     async function removeLogo(){
+      if(!CURRENT_CLIENT){ return; }
       if(!confirm('Remove logo?')) return;
       await api('/api/client-edit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:CURRENT_CLIENT,removeLogo:true})});
-      alert('Logo removed.');
+      await loadClients();     // refresh sidebar
+      pickClient(CURRENT_CLIENT);
     }
 
     function openAddUser(){
@@ -829,7 +829,6 @@ app.get('/', (req, res) => {
     }
 
     function readAsDataURL(file){ return new Promise(res=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.readAsDataURL(file); }); }
-
     function safeId(name){ return name.replace(/[^a-zA-Z0-9]/g,'_'); }
 
     async function selectPosition(pos, el){
@@ -846,6 +845,42 @@ app.get('/', (req, res) => {
       if(dec==='maybe') return '#b86e0055';
       if(dec==='no') return '#7a1b1b55';
       return '#0000';
+    }
+
+    function renderNotesList(fileSafeId, notes){
+      const boxId = 'notes_'+fileSafeId;
+      const total = notes.length;
+      const shown = notes.slice(0, 3); // newest first (we prepend on add)
+      let html = '';
+      shown.forEach(n=>{
+        const canDel = (ME.role==='admin') || (n.authorEmail===ME.email);
+        html += '<div class="noteRow" data-ts="'+n.timestamp+'">';
+        html += '<div><div><b>'+(n.authorName||'')+'</b> &lt;'+n.authorEmail+'&gt; — '+new Date(n.timestamp).toLocaleString()+'</div><div>'+n.text+'</div></div>';
+        html += (canDel ? '<button class="trash" onclick="delNoteByTs(\\''+fileSafeId+'\\',\\''+n.timestamp+'\\')">🗑️</button>' : '');
+        html += '</div>';
+      });
+      if (total > 3) {
+        html += '<div class="showMore" onclick="toggleNotes(\\''+fileSafeId+'\\')">Show more comments ('+(total-3)+')</div>';
+        // store the rest in a hidden container
+        html += '<div id="more_'+fileSafeId+'" style="display:none;">';
+        notes.slice(3).forEach(n=>{
+          const canDel = (ME.role==='admin') || (n.authorEmail===ME.email);
+          html += '<div class="noteRow" data-ts="'+n.timestamp+'">';
+          html += '<div><div><b>'+(n.authorName||'')+'</b> &lt;'+n.authorEmail+'&gt; — '+new Date(n.timestamp).toLocaleString()+'</div><div>'+n.text+'</div></div>';
+          html += (canDel ? '<button class="trash" onclick="delNoteByTs(\\''+fileSafeId+'\\',\\''+n.timestamp+'\\')">🗑️</button>' : '');
+          html += '</div>';
+        });
+        html += '</div>';
+      }
+      return html;
+    }
+
+    function toggleNotes(fileSafeId){
+      const el = document.getElementById('more_'+fileSafeId);
+      if(!el) return;
+      const trigger = el.previousElementSibling; // the "Show more" div
+      if (el.style.display==='none'){ el.style.display='block'; if(trigger) trigger.textContent='Hide comments'; }
+      else { el.style.display='none'; if(trigger) trigger.textContent='Show more comments'; }
     }
 
     async function loadPosition(pos){
@@ -884,29 +919,44 @@ app.get('/', (req, res) => {
         h += '<textarea id="nt'+sid+'" class="note" placeholder="Add a note..."></textarea>';
         h += '<div><button onclick="addNote(\\''+f+'\\')">Add Note</button></div>';
         h += '<div id="ov_'+sid+'" style="position:absolute;inset:0;border-radius:10px;pointer-events:none;background:'+overlayColor(s.decision)+'"></div>';
+        // Notes (collapsed when >3)
+        const notes = (s.notes||[]);
         h += '<div style="display:flex;flex-direction:column;gap:6px;margin-top:6px;" id="notes_'+sid+'">';
-        (s.notes||[]).forEach(n=>{
-          const canDel = (ME.role==='admin') || (n.authorEmail===ME.email);
-          h += '<div class="noteRow" data-ts="'+n.timestamp+'">';
-          h += '<div><div><b>'+(n.authorName||'')+'</b> &lt;'+n.authorEmail+'&gt; — '+new Date(n.timestamp).toLocaleString()+'</div><div>'+n.text+'</div></div>';
-          h += (canDel ? '<button class="trash" onclick="delNote(\\''+f+'\\',\\''+n.timestamp+'\\')">🗑️</button>' : '');
-          h += '</div>';
-        });
-        h += '</div></div>';
+        h += renderNotesList(sid, notes);
+        h += '</div>';
+
+        h += '</div>'; // card
       });
       h += '</div>';
 
       if(ME.role==='admin'){
-        h += '<div style="margin-top:12px;padding:8px;border:1px dashed ${BRAND.accent};border-radius:8px;">';
+        h += '<div style="margin-top:12px;padding:8px;border:1px dashed ${BRAND.accent};border-radius:8px;" id="dropZone">';
         h += '<div style="margin-bottom:6px;font-weight:600;">Upload CVs</div>';
         h += '<input id="cvFiles" type="file" multiple /> ';
         h += '<button onclick="uploadCVs()">Upload</button> ';
-        h += '<span id="upMsg" class="muted"></span>';
+        h += '<div class="muted" style="margin-top:6px;">Or drag & drop files here</div>';
+        h += '<span id="upMsg" class="muted" style="margin-left:8px;"></span>';
         h += '</div>';
       }
 
       main.innerHTML = h;
       window._currentDetails = d;
+
+      // drag & drop events
+      const dz = document.getElementById('dropZone');
+      if(dz){
+        ['dragenter','dragover'].forEach(ev=>{
+          dz.addEventListener(ev,e=>{ e.preventDefault(); dz.style.filter='brightness(1.1)'; dz.style.borderColor='#bbb'; });
+        });
+        ['dragleave','drop'].forEach(ev=>{
+          dz.addEventListener(ev,e=>{ e.preventDefault(); dz.style.filter=''; dz.style.borderColor='${BRAND.accent}'; });
+        });
+        dz.addEventListener('drop', e=>{
+          e.preventDefault();
+          const files = Array.from(e.dataTransfer.files||[]);
+          if(files.length) uploadCVs(files);
+        });
+      }
     }
 
     function editDetails(){
@@ -955,14 +1005,38 @@ app.get('/', (req, res) => {
       if(r.ok){
         document.getElementById(id).value='';
         const j = await r.json(), n=j.note;
-        const box = document.getElementById('notes_'+safeId(f));
+        const sid = safeId(f);
+        const box = document.getElementById('notes_'+sid);
         if(box){
+          // prepend newest
           const canDel = (ME.role==='admin') || (n.authorEmail===ME.email);
           const row = document.createElement('div');
           row.className = 'noteRow';
           row.setAttribute('data-ts', n.timestamp);
-          row.innerHTML = '<div><div><b>'+(n.authorName||'')+'</b> &lt;'+n.authorEmail+'&gt; — '+new Date(n.timestamp).toLocaleString()+'</div><div>'+n.text+'</div></div>' + (canDel ? '<button class="trash" onclick="delNote(\\''+f+'\\',\\''+n.timestamp+'\\')">🗑️</button>' : '');
+          row.innerHTML = '<div><div><b>'+(n.authorName||'')+'</b> &lt;'+n.authorEmail+'&gt; — '+new Date(n.timestamp).toLocaleString()+'</div><div>'+n.text+'</div></div>' + (canDel ? '<button class="trash" onclick="delNoteByTs(\\''+sid+'\\',\\''+n.timestamp+'\\')">🗑️</button>' : '');
           box.prepend(row);
+
+          // Collapse logic: keep only first 3 visible, move others under "more"
+          const rows = Array.from(box.querySelectorAll('.noteRow'));
+          if (rows.length > 3) {
+            // If "more" container missing, create it and show "Show more" link
+            let more = document.getElementById('more_'+sid);
+            let trigger = box.querySelector('.showMore');
+            if (!more) {
+              more = document.createElement('div');
+              more.id = 'more_'+sid;
+              more.style.display = 'none';
+              // insert after a new "Show more" line
+              const link = document.createElement('div');
+              link.className = 'showMore';
+              link.textContent = 'Show more comments';
+              link.onclick = () => toggleNotes(sid);
+              box.appendChild(link);
+              box.appendChild(more);
+            }
+            // Move any rows after index 2 into "more"
+            rows.slice(3).forEach(rw => { more.appendChild(rw); });
+          }
         }
       }
     }
@@ -974,18 +1048,38 @@ app.get('/', (req, res) => {
         if(box){ const rows = box.querySelectorAll('.noteRow'); rows.forEach(row => { if(row.getAttribute('data-ts')===ts){ row.remove(); } }); }
       } else { alert('Failed to delete'); }
     }
+    // Delete by fileSafeId + timestamp (used in collapsed "more" also)
+    function delNoteByTs(fileSafeId, ts){
+      // we still need original filename for API; easiest: find the link href in card header
+      // but simpler: call API with CURRENT_POS + CURRENT_CLIENT + find ts in both visible and hidden.
+      // We'll send using the fileSafeId to find displayed file name:
+      const card = document.getElementById('card_'+fileSafeId);
+      if(!card) return;
+      const a = card.querySelector('.file a');
+      if(!a) return;
+      const url = new URL(a.href);
+      const fname = url.searchParams.get('name');
+      delNote(fname, ts);
+    }
 
-    async function uploadCVs(){
+    async function uploadCVs(passedFiles){
       const inp = document.getElementById('cvFiles');
       const out = document.getElementById('upMsg');
-      if(!inp || !inp.files || !inp.files.length) return;
+
+      const fileList = passedFiles || (inp && inp.files ? Array.from(inp.files) : []);
+      if(!fileList.length) return;
+
       out.textContent = 'Uploading...';
-      const files = await Promise.all(Array.from(inp.files).map(f => new Promise(res => {
+      const files = await Promise.all(fileList.map(f => new Promise(res => {
         const r = new FileReader();
         r.onload = () => res({ name: f.name, base64: r.result, type: f.type });
         r.readAsDataURL(f);
       })));
-      const r = await fetch('/api/upload', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ client: CURRENT_CLIENT, position: CURRENT_POS, files }) });
+
+      const r = await fetch('/api/upload', { 
+        method:'POST', headers:{'Content-Type':'application/json'}, 
+        body: JSON.stringify({ client: CURRENT_CLIENT, position: CURRENT_POS, files }) 
+      });
       if(r.ok){ out.textContent='Done.'; await loadPosition(CURRENT_POS); } else { out.textContent='Failed.'; }
     }
 
@@ -1007,18 +1101,25 @@ app.get('/', (req, res) => {
     }
 
     async function saveNewPosition(title, details){
-      const r = await fetch('/api/position', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ client: CURRENT_CLIENT, position: title, details }) });
+      const r = await fetch('/api/position', { 
+        method:'POST', 
+        headers:{'Content-Type':'application/json'}, 
+        body: JSON.stringify({ client: CURRENT_CLIENT, position: title, details }) 
+      });
       if(r.ok){
-        await pickClient(CURRENT_CLIENT);
+        await pickClient(CURRENT_CLIENT);                    // refresh list
         const box=document.getElementById('positions');
-        Array.prototype.forEach.call(box.children, function(x){ if(x.firstChild && x.firstChild.textContent===title){ x.click(); } });
-      }else{ alert('Failed to add position'); }
+        Array.prototype.forEach.call(box.children, function(x){
+          if(x.firstChild && x.firstChild.textContent===title){ x.click(); }
+        });
+      }else{ 
+        alert('Failed to add position'); 
+      }
     }
 
     me().then(u => { if(u){ init(); } });
   </script>
   </body></html>`;
-
   res.send(html);
 });
 
@@ -1031,21 +1132,3 @@ app.listen(PORT, () => {
   console.log('   CVs & logos stored in Firebase Storage');
   console.log('   Login hint shown only on localhost.');
 });
-
-/**
- * ===== Render ENV VARS to set =====
- *
- * 1) FIREBASE_SERVICE_ACCOUNT
- *    Paste the *entire* JSON of a Firebase service account with Storage Admin + Firestore Admin.
- *    Create it in: Firebase Console -> Project Settings -> Service Accounts -> Generate new private key
- *
- * 2) FIREBASE_PROJECT_ID = grid-f4a70
- * 3) FIREBASE_STORAGE_BUCKET = grid-f4a70.appspot.com   (default if omitted)
- *
- * 4) NOTIFY_FROM = info@hyreus.co.uk
- * 5) NOTIFY_TO = jakub@hyreus.co.uk,john@hyreus.co.uk
- * 6) SMTP_PASSWORD = (your Outlook app password for info@)
- *
- * Dependencies (package.json):
- *   "express", "express-session", "firebase-admin", "nodemailer"
- */
