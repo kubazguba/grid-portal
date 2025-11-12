@@ -707,39 +707,72 @@ app.get('/', (req, res) => {
       return '<img src="/logos/'+encodeURIComponent(name)+'" onerror="this.style.display=\\'none\\'" style="width:140px;max-height:90px;object-fit:contain;border-radius:6px;border:1px solid ${BRAND.accent};"/>';
     }
 
-    async function init(){
-      const u=await me(); if(!u) return;
-      document.getElementById('loginCard').style.display='none';
-      const app=document.getElementById('app');
-      app.style.display='block';
+async function init() {
+  const u = await me();
+  if (!u) return;
 
-      let left = '<aside class="sidebar">';
-      left += '<div class="logo"><img src="/logo" style="width:160px;max-height:90px;object-fit:contain;border-radius:8px;border:1px solid ${BRAND.accent};"/></div>';
+  // Hide login, show app
+  const loginCard = document.getElementById('loginCard');
+  if (loginCard) loginCard.style.display = 'none';
 
-      if(u.role==='admin'){
-        left += '<div style="text-align:center;opacity:.9;font-weight:600;">Admin view</div>';
-        left += '<div style="margin-top:4px;"><div id="clientList"></div></div>';
-      } else if(u.role==='client' && u.clientId){
-        left += '<div style="text-align:center;">'+clientLogoImgTag(u.clientId)+'<div style="margin-top:6px;">'+u.clientId+'</div></div>';
-      }
+  const app = document.getElementById('app');
+  app.style.display = 'block';
 
-      left += '<div id="positions"></div>';
-   left += '<div id="addPosBtn" class="plus" onclick="openAddPosition()" title="Add Position">➕ Add Position</div>';
-      left += '<div class="footer"><div class="sep"></div>powered by Hyreus</div>';
-      left += '<div style="margin-top:8px;"><button onclick="logout()">Logout</button></div></aside>';
+  // Build sidebar and main area
+  let left = '<aside class="sidebar">';
+  left += '<div class="logo"><img src="/logo" style="width:160px;max-height:90px;object-fit:contain;border-radius:8px;border:1px solid #6b6b6b;"/></div>';
 
-      const right = '<main><div id="main"></div></main>';
-      app.innerHTML = '<div class="layout">'+left+right+'</div>';
+  if (u.role === 'admin') {
+    left += '<div style="text-align:center;opacity:.9;font-weight:600;">Admin view</div>';
+    left += '<div style="margin-top:4px;"><div id="clientList"></div></div>';
+    // Admin can add positions
+    left += '<div id="addPosBtn" class="plus" onclick="openAddPosition()" title="Add Position">➕ Add Position</div>';
+  } else if (u.role === 'client' && u.clientId) {
+    left += '<div style="text-align:center;">' + clientLogoImgTag(u.clientId) + '<div style="margin-top:6px;">' + u.clientId + '</div></div>';
+    // No add button for clients
+  }
 
-      await loadClients();
+  left += '<div id="positions"></div>';
+  left += '<div class="footer"><div class="sep"></div>powered by Hyreus</div>';
+  left += '<div style="margin-top:8px;"><button onclick="logout()">Logout</button></div></aside>';
+
+  const right = '<main><div id="main"></div></main>';
+  app.innerHTML = '<div class="layout">' + left + right + '</div>';
+
+  // ---- Role routing ----
+  if (u.role === 'admin') {
+    const cl = document.getElementById('clientList');
+    if (cl) {
+      try { await loadClients(); } catch (e) { console.warn('loadClients() failed:', e); }
     }
+    try { await loadAllPositions(); } catch (e) { console.warn('loadAllPositions() failed:', e); }
+  } else {
+    const ownerKey = u.clientId || u.email || u.uid;
+    try { await loadPositionsForClient(ownerKey); } catch (e) { console.warn('loadPositionsForClient() failed:', e); }
+  }
+}
 
-async function loadClients(){
-  const j = await api('/api/clients');
+async function loadClients() {
   const box = document.getElementById('clientList');
+  if (!box) {
+    console.warn('clientList element not found — skipping loadClients()');
+    return;
+  }
+
+  box.innerHTML = 'Loading clients...';
+
+  let j;
+  try {
+    j = await api('/api/clients');
+  } catch (e) {
+    console.error('Error loading clients:', e);
+    box.innerHTML = 'Failed to load clients.';
+    return;
+  }
+
   box.innerHTML = '';
 
-  // <select id="clientDropdown">...</select>
+  // Dropdown select
   const select = document.createElement('select');
   select.id = 'clientDropdown';
   select.style.width = '100%';
@@ -754,7 +787,7 @@ async function loadClients(){
   def.textContent = '-- Select Client --';
   select.appendChild(def);
 
-  (j.clients || []).forEach(c => {
+  (j?.clients || []).forEach(c => {
     const opt = document.createElement('option');
     opt.value = c;
     opt.textContent = c;
@@ -762,11 +795,11 @@ async function loadClients(){
     select.appendChild(opt);
   });
 
-  select.addEventListener('change', (e) => {
+  select.addEventListener('change', e => {
     if (e.target.value) pickClient(e.target.value);
   });
 
-  // wiersz z "Add Client" i koszem
+  // Add + Delete client row
   const row = document.createElement('div');
   row.style.marginTop = '6px';
   row.style.display = 'flex';
@@ -794,7 +827,7 @@ async function loadClients(){
   box.appendChild(select);
   box.appendChild(row);
 
-  if ((j.clients || []).length && !CURRENT_CLIENT) {
+  if ((j?.clients || []).length && !CURRENT_CLIENT) {
     pickClient(j.clients[0]);
   } else if (ME && ME.role === 'client') {
     pickClient(ME.clientId);
