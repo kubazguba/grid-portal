@@ -409,13 +409,17 @@ app.get('/api/client-positions', async (req, res) => {
     const client = req.query.client;
     if (!client) return res.status(400).json({ error: 'missing client param' });
 
-    // Firestore: look up by client field
-    const snap = await db.collection('positions')
-      .where('client', '==', client)
+    const snap = await db
+      .collection('clients')
+      .doc(client)
+      .collection('positions')
+      .orderBy(admin.firestore.FieldPath.documentId())
       .get();
 
-    const positions = [];
-    snap.forEach(doc => positions.push({ id: doc.id, ...doc.data() }));
+    const positions = snap.docs.map(d => {
+      const data = d.data() || {};
+      return { id: d.id, ...data };
+    });
 
     res.json({ positions });
   } catch (err) {
