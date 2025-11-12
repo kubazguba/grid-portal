@@ -1270,7 +1270,7 @@ async function loadPositionsForClient(clientKey) {
 
   try {
     const data = await api('/api/client-positions?client=' + encodeURIComponent(clientKey));
-
+CURRENT_CLIENT = clientKey;
     box.innerHTML = '';
 
     if (!data.positions || !data.positions.length) {
