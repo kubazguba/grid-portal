@@ -1270,6 +1270,12 @@ async function loadPositionsForClient(clientKey) {
 
 // expose globally just in case
 window.loadPositionsForClient = loadPositionsForClient;
+if (typeof openPosition === 'undefined') {
+  window.openPosition = function(id) {
+    console.log('Client clicked position', id);
+  };
+}
+
 
     me().then(u => { if(u){ init(); } });
   </script>
@@ -1280,6 +1286,29 @@ window.loadPositionsForClient = loadPositionsForClient;
 // -----------------------------
 // Start
 // -----------------------------
+// -----------------------------
+// API: Get positions by client
+// -----------------------------
+app.get('/api/positions', async (req, res) => {
+  try {
+    const client = req.query.client;
+    if (!client) return res.status(400).json({ error: 'missing client param' });
+
+    // Firestore (or whatever storage you use)
+    const snap = await db.collection('positions')
+      .where('client', '==', client)
+      .get();
+
+    const positions = [];
+    snap.forEach(doc => positions.push({ id: doc.id, ...doc.data() }));
+
+    res.json({ positions });
+  } catch (err) {
+    console.error('Error fetching positions:', err);
+    res.status(500).json({ error: 'failed to load positions' });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`\n🚀 GRID (Firebase Cloud) running on port ${PORT}`);
   console.log('   Clients & positions stored in Firestore');
