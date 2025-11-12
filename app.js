@@ -1279,14 +1279,15 @@ async function loadPositionsForClient(clientKey) {
     }
 
     data.positions.forEach(function(p){
-      var div = document.createElement('div');
-      div.className = 'posItem';
-      div.innerHTML =
-        '<div class="posTitle">' + (p.id || p.title || p.name || p.position || '(no title)') + '</div>' +
-        '<div class="posMeta">' + (p.location || '') + ' &middot; ' + (p.status || '') + '</div>';
-      div.addEventListener('click', function(){ openPosition(p.id); });
-      box.appendChild(div);
-    });
+  var div = document.createElement('div');
+  // use the .pos class so it looks like a clickable item (same as admin view)
+  div.className = 'pos';
+  // show the position title (the Firestore document ID)
+  div.innerHTML = '<div>' + (p.id || p.title || p.name || p.position || '(no title)') + '</div>';
+  // when clicked, open the position details
+  div.onclick = function(){ openPosition(p.id); };
+  box.appendChild(div);
+});
   } catch (err) {
     console.error('Error loading client positions:', err);
     box.innerHTML = 'Failed to load positions.';
@@ -1297,10 +1298,10 @@ async function loadPositionsForClient(clientKey) {
 window.loadPositionsForClient = loadPositionsForClient;
 if (typeof openPosition === 'undefined') {
   window.openPosition = function(id) {
-    console.log('Client clicked position', id);
+    // Use existing logic to open position details and CVs
+    selectPosition(id);
   };
 }
-
 
     me().then(u => { if(u){ init(); } });
   </script>
