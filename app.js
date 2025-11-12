@@ -1247,3 +1247,42 @@ app.listen(PORT, () => {
   console.log('   CVs & logos stored in Firebase Storage');
   console.log('   Login hint shown only on localhost.');
 });
+
+// --- Load positions for logged-in client ---
+async function loadPositionsForClient(clientKey) {
+  console.log("Loading positions for client:", clientKey);
+  const box = document.getElementById('positions');
+  if (!box) {
+    console.warn('positions container not found');
+    return;
+  }
+
+  box.innerHTML = 'Loading positions...';
+
+  try {
+    // Fetch only positions assigned to this client
+    const data = await api('/api/positions?client=' + encodeURIComponent(clientKey));
+
+    box.innerHTML = '';
+
+    if (!data.positions || !data.positions.length) {
+      box.innerHTML = '<div style="opacity:.7;margin-top:12px;">No positions found for this client.</div>';
+      return;
+    }
+
+    data.positions.forEach(p => {
+      const div = document.createElement('div');
+      div.className = 'posItem';
+      div.innerHTML = `
+        <div class="posTitle">${p.title || '(no title)'}</div>
+        <div class="posMeta">${p.location || ''} &middot; ${p.status || ''}</div>
+      `;
+      div.addEventListener('click', () => openPosition(p.id));
+      box.appendChild(div);
+    });
+  } catch (err) {
+    console.error('Error loading client positions:', err);
+    box.innerHTML = 'Failed to load positions.';
+  }
+}
+
