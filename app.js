@@ -1282,7 +1282,7 @@ async function loadPositionsForClient(clientKey) {
       var div = document.createElement('div');
       div.className = 'posItem';
       div.innerHTML =
-        '<div class="posTitle">' + (p.title || '(no title)') + '</div>' +
+        '<div class="posTitle">' + (p.id || p.title || p.name || p.position || '(no title)') + '</div>' +
         '<div class="posMeta">' + (p.location || '') + ' &middot; ' + (p.status || '') + '</div>';
       div.addEventListener('click', function(){ openPosition(p.id); });
       box.appendChild(div);
