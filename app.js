@@ -403,6 +403,27 @@ app.post('/api/position', requireAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
+// --- GET positions for client (client view only) ---
+app.get('/api/client-positions', async (req, res) => {
+  try {
+    const client = req.query.client;
+    if (!client) return res.status(400).json({ error: 'missing client param' });
+
+    // Firestore: look up by client field
+    const snap = await db.collection('positions')
+      .where('client', '==', client)
+      .get();
+
+    const positions = [];
+    snap.forEach(doc => positions.push({ id: doc.id, ...doc.data() }));
+
+    res.json({ positions });
+  } catch (err) {
+    console.error('Error fetching client positions:', err);
+    res.status(500).json({ error: 'failed to load client positions' });
+  }
+});
+
 // -----------------------------
 // Files + feedback
 // -----------------------------
@@ -1244,7 +1265,7 @@ async function loadPositionsForClient(clientKey) {
   box.innerHTML = 'Loading positions...';
 
   try {
-    const data = await api('/api/positions?client=' + encodeURIComponent(clientKey));
+    const data = await api('/api/client-positions?client=' + encodeURIComponent(clientKey));
 
     box.innerHTML = '';
 
