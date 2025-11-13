@@ -1303,20 +1303,17 @@ async function loadPositionsForClient(clientKey) {
       return;
     }
 
-    data.positions.forEach(function(p){
-      var div = document.createElement('div');
-      div.className = 'pos';
+data.positions.forEach(function(p){
+  var div = document.createElement('div');
+  div.className = 'pos';
 
-      // title + CV count on the right
-      div.innerHTML =
-        '<div style="display:flex;justify-content:space-between;align-items:center;">' +
-          '<span>' + (p.id || p.title || p.name || p.position || '(no title)') + '</span>' +
-          '<span style="opacity:.7;">(' + ((p.files && p.files.length) || p.count || 0) + ')</span>' +
-        '</div>';
+  div.innerHTML =
+    '<div>' + (p.id || p.title || p.name || p.position || '(no title)') + '</div>' +
+    '<div style="opacity:.7;">(' + ((p.files && p.files.length) || p.count || 0) + ')</div>';
 
-      div.onclick = function(){ openPosition(p.id); };
-      box.appendChild(div);
-    });
+  div.onclick = function(){ openPosition(p.id); };
+  box.appendChild(div);
+});
 
   } catch (err) {
     console.error('Error loading client positions:', err);
