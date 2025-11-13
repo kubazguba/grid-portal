@@ -719,13 +719,37 @@ app.get('/', (req, res) => {
     async function me(){const j=await api('/api/me'); ME=j.user; return ME;}
 
     async function login(){
-      const email=document.getElementById('email').value;
-      const password=document.getElementById('password').value;
-      try{
-        await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,password})}).then(r=>{if(!r.ok) throw new Error();});
+      const email = document.getElementById('email').value;
+      const password = document.getElementById('password').value;
+
+      if (!email || !password) {
+        alert('Please enter email and password');
+        return;
+      }
+
+      try {
+        // use the api() helper so errors are handled consistently
+        await api('/api/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password })
+        });
+
+        // make sure session is ready
+        await me();
         init();
-      }catch{ alert('Login failed'); }
+      } catch (e) {
+        alert('Login failed');
+      }
     }
+
+    // Allow ENTER key to trigger login
+    document.addEventListener('keydown', function(e){
+      if (e.key === 'Enter') {
+        login();
+      }
+    });
+
     async function logout(){ await fetch('/api/logout',{method:'POST'}); location.reload(); }
 
     function clientLogoImgTag(name){
@@ -1270,7 +1294,8 @@ async function loadPositionsForClient(clientKey) {
 
   try {
     const data = await api('/api/client-positions?client=' + encodeURIComponent(clientKey));
-CURRENT_CLIENT = clientKey;
+    CURRENT_CLIENT = clientKey;
+
     box.innerHTML = '';
 
     if (!data.positions || !data.positions.length) {
@@ -1279,15 +1304,20 @@ CURRENT_CLIENT = clientKey;
     }
 
     data.positions.forEach(function(p){
-  var div = document.createElement('div');
-  // use the .pos class so it looks like a clickable item (same as admin view)
-  div.className = 'pos';
-  // show the position title (the Firestore document ID)
-  div.innerHTML = '<div>' + (p.id || p.title || p.name || p.position || '(no title)') + '</div>';
-  // when clicked, open the position details
-  div.onclick = function(){ openPosition(p.id); };
-  box.appendChild(div);
-});
+      var div = document.createElement('div');
+      div.className = 'pos';
+
+      // title + CV count on the right
+      div.innerHTML =
+        '<div style="display:flex;justify-content:space-between;align-items:center;">' +
+          '<span>' + (p.id || p.title || p.name || p.position || '(no title)') + '</span>' +
+          '<span style="opacity:.7;">(' + ((p.files && p.files.length) || p.count || 0) + ')</span>' +
+        '</div>';
+
+      div.onclick = function(){ openPosition(p.id); };
+      box.appendChild(div);
+    });
+
   } catch (err) {
     console.error('Error loading client positions:', err);
     box.innerHTML = 'Failed to load positions.';
